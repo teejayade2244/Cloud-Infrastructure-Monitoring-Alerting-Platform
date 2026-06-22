@@ -1,0 +1,6 @@
+@incidents_service_HostAddress = http://localhost:5160
+
+GET {{incidents_service_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
