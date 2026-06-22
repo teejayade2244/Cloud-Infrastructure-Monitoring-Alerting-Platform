@@ -1,0 +1,98 @@
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+.env
+.env.*
+.DS_Store
+dist/
+build/
+coverage/
+*.log
+logs/
+*.tsbuildinfo
+
+# Azure Functions / locals
+.local.settings.json
+
+# Visual Studio / .NET
+bin/
+obj/
+*.user
+*.userosscache
+*.suo
+*.userprefs
+*.~* 
+*.assemblyinfo.cs
+*.ncrunch*
+_ReSharper*/
+*.ReSharper*/
+*.DotSettings.user
+*.LocalHistory
+*.DotSettings
+
+# Rider
+.idea/
+*.sln.iml
+
+# Visual Studio Code
+.vscode/
+.history/
+
+# NuGet
+*.nupkg
+*.snupkg
+.nuget/packages/
+*.nuget.props
+project.lock.json
+project.fragment.lock.json
+artifacts/
+
+# .NET Core
+*.dbmdl
+*.jfm
+*.tmproj
+*.user
+*.vs/
+appsettings.Development.json
+
+# OS generated files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Temporary files
+*.tmp
+*.temp
+~$*
+
+# Logs
+*.log
+
+# Ignore secret and generated files
+secrets.json
+credentials.json
+
+# Docker
+docker-compose.override.yml
+
+# Package manager directories
+jspm_packages/
+
+# Optional npm cache directory
+.npm
+
+# Local env files
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Azure Service Bus / Cosmos local emulator state (if any)
+*.db
+checkpoint/
