@@ -7,9 +7,10 @@ var builder = WebApplication.CreateBuilder(args);
 
 // Azure credential - uses managed identity in Azure, CLI locally
 var credential = new DefaultAzureCredential();
-
+var cosmosEndpoint = builder.Configuration["COSMOS_ENDPOINT"] 
+    ?? Environment.GetEnvironmentVariable("COSMOS_ENDPOINT");
 // Cosmos DB
-var cosmosEndpoint = Environment.GetEnvironmentVariable("COSMOS_ENDPOINT");
+// var cosmosEndpoint = Environment.GetEnvironmentVariable("COSMOS_ENDPOINT");
 var cosmosClient = new CosmosClient(cosmosEndpoint, credential);
 builder.Services.AddSingleton(cosmosClient);
 

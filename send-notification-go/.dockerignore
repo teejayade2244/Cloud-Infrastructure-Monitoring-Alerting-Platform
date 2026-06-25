@@ -1,0 +1,16 @@
+# Build artifacts
+**/bin/**
+**/obj/**
+**/*.exe
+**/*.log
+
+# Go dependencies and cache
+vendor/
+
+# Git and tooling
+.git
+Dockerfile
+.dockerignore
+
+# Local files
+*.env

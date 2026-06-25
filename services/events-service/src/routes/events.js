@@ -23,7 +23,9 @@ if (!serviceBusNamespace) {
         "Missing required environment variable SERVICEBUS_NAMESPACE. Set it to your Service Bus fully qualified namespace, e.g. <namespace>.servicebus.windows.net",
     )
 }
-
+if (!process.env.COSMOS_ENDPOINT) {
+    throw new Error("Missing required environment variable COSMOS_ENDPOINT...")
+}
 // Cosmos DB setup
 const cosmosClient = new CosmosClient({
     endpoint: cosmosEndpoint,

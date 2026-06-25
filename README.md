@@ -38,3 +38,12 @@ Key Vault — Cosmos DB connection details, Service Bus connection string. All s
 App Configuration — feature flags (enable-auto-incident-creation, enable-notifications), environment settings (alert-threshold-cpu, alert-threshold-memory).
 Managed Identity — every service authenticates to every other Azure resource without a single hardcoded credential.
 ACR — stores container images for Events Service and Incidents Service.
+
+
+Client → APIM → Events Service → Cosmos DB (event)
+                              → Service Bus (critical only)
+                                    ↓
+                    CreateIncident Function → Cosmos DB (incident)
+                    SendNotification Function → Cosmos DB (notification)
+
+Client → APIM → Incidents Service → Cosmos DB (read/update incidents)

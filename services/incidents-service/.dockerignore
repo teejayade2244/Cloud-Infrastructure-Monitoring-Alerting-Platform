@@ -1,0 +1,14 @@
+# Build outputs
+bin/
+obj/
+
+# User files
+.vs/
+
+# Git and tooling
+.git
+Dockerfile
+.dockerignore
+
+# Local files
+appsettings.Development.json
