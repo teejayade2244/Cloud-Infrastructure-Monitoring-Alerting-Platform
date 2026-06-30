@@ -1,6 +1,8 @@
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Azure.Cosmos;
 using incidents_service.Models;
 using incidents_service.Services;
+using System.Text.Json;
 
 namespace incidents_service.Controllers
 {
@@ -9,10 +11,40 @@ namespace incidents_service.Controllers
     public class IncidentsController : ControllerBase
     {
         private readonly IIncidentService _incidentService;
+        private readonly CosmosClient _cosmosClient;
 
-        public IncidentsController(IIncidentService incidentService)
+        public IncidentsController(IIncidentService incidentService, CosmosClient cosmosClient)
+{
+    _incidentService = incidentService;
+    _cosmosClient = cosmosClient;
+}
+
+        [HttpGet("/notifications")]
+        public async Task<IActionResult> GetNotifications()
         {
-            _incidentService = incidentService;
+            try
+            {
+                var container = _cosmosClient.GetDatabase("InfraMonitorDB").GetContainer("Notifications");
+                var query = "SELECT * FROM c ORDER BY c.sentAt DESC OFFSET 0 LIMIT 50";
+                var notifications = new List<NotificationItem>();
+                var iterator = container.GetItemQueryIterator<NotificationItem>(query);
+
+                while (iterator.HasMoreResults)
+                {
+                    var response = await iterator.ReadNextAsync();
+                    notifications.AddRange(response);
+                }
+
+                return Ok(new NotificationListResponse
+                {
+                    Notifications = notifications,
+                    Count = notifications.Count
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, new { error = ex.Message });
+            }
         }
 
         [HttpPost]

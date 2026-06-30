@@ -40,10 +40,15 @@ Managed Identity — every service authenticates to every other Azure resource w
 ACR — stores container images for Events Service and Incidents Service.
 
 
-Client → APIM → Events Service → Cosmos DB (event)
-                              → Service Bus (critical only)
-                                    ↓
-                    CreateIncident Function → Cosmos DB (incident)
-                    SendNotification Function → Cosmos DB (notification)
+Client → APIM → Events Service → Cosmos DB (event saved)
+                               → Service Bus topic
+                                      ↓
+                    ┌─────────────────┼─────────────────┐
+                    ↓                 ↓                  ↓
+            CreateIncident      SendNotification    Logic App
+            Function            Function            ↓
+            ↓                   (can remove)    Send email 
+            Cosmos DB                            Save to Cosmos DB 
+            (incident)
 
 Client → APIM → Incidents Service → Cosmos DB (read/update incidents)

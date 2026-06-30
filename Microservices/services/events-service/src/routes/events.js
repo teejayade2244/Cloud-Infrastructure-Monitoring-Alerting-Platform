@@ -7,7 +7,9 @@ const { validateEvent } = require("../middleware/validate")
 
 const router = express.Router()
 
-const credential = new DefaultAzureCredential()
+const credential = new DefaultAzureCredential({
+    managedIdentityClientId: process.env.AZURE_CLIENT_ID,
+})
 
 const cosmosEndpoint = process.env.COSMOS_ENDPOINT
 const serviceBusNamespace = process.env.SERVICEBUS_NAMESPACE

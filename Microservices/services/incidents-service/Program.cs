@@ -6,7 +6,10 @@ using incidents_service.Middleware;
 var builder = WebApplication.CreateBuilder(args);
 
 // Azure credential - uses managed identity in Azure, CLI locally
-var credential = new DefaultAzureCredential();
+var credential = new DefaultAzureCredential(new DefaultAzureCredentialOptions
+{
+    ManagedIdentityClientId = Environment.GetEnvironmentVariable("AZURE_CLIENT_ID")
+});
 var cosmosEndpoint = builder.Configuration["COSMOS_ENDPOINT"] 
     ?? Environment.GetEnvironmentVariable("COSMOS_ENDPOINT");
 // Cosmos DB
