@@ -41,6 +41,13 @@ export const notificationsApi = {
     }
 }
 
+// export const notificationsApi = {
+//     getAll: async () => {
+//         const res = await axios.get(`${APIM_BASE}/incidents-api/notifications`, { headers })
+//         return res.data
+//     }
+// }
+
 export const incidentsApi = {
     getAll: async (params?: {
         severity?: string

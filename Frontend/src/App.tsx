@@ -2,31 +2,32 @@ import { useEffect, useState } from "react"
 import StatsBar from "./components/StatsBar"
 import IncidentsList from "./components/IncidentsList"
 import EventForm from "./components/EventForm"
+import NotificationsList from "./components/NotificationsList"
 import { incidentsApi, eventsApi } from "./services/api"
 import type { Incident, Event } from "./types"
 
 export default function App() {
     const [incidents, setIncidents] = useState<Incident[]>([])
     const [events, setEvents] = useState<Event[]>([])
-    const [activeTab, setActiveTab] = useState<"incidents" | "publish">(
-        "incidents",
-    )
+    const [activeTab, setActiveTab] = useState<
+        "incidents" | "publish" | "notifications"
+    >("incidents")
     const [refreshKey, setRefreshKey] = useState(0)
 
-    const fetchStats = async () => {
-        try {
-            const [incData, evData] = await Promise.all([
-                incidentsApi.getAll(),
-                eventsApi.getAll(),
-            ])
-            setIncidents(incData.incidents)
-            setEvents(evData.events)
-        } catch (err) {
-            console.error(err)
-        }
-    }
-
     useEffect(() => {
+        const fetchStats = async () => {
+            try {
+                const [incData, evData] = await Promise.all([
+                    incidentsApi.getAll(),
+                    eventsApi.getAll(),
+                ])
+                setIncidents(incData.incidents)
+                setEvents(evData.events)
+            } catch (err) {
+                console.error(err)
+            }
+        }
+
         fetchStats()
     }, [refreshKey])
 
@@ -37,7 +38,6 @@ export default function App() {
 
     return (
         <div className="min-h-screen bg-gray-900 text-white">
-            {/* Header */}
             <header className="bg-gray-800 border-b border-gray-700 px-6 py-4">
                 <div className="max-w-7xl mx-auto flex items-center justify-between">
                     <div className="flex items-center gap-3">
@@ -63,7 +63,6 @@ export default function App() {
             </header>
 
             <main className="max-w-7xl mx-auto px-6 py-6">
-                {/* Stats */}
                 <StatsBar
                     totalEvents={events.length}
                     totalIncidents={incidents.length}
@@ -71,7 +70,6 @@ export default function App() {
                     criticalIncidents={criticalIncidents}
                 />
 
-                {/* Tabs */}
                 <div className="flex gap-2 mb-6">
                     <button
                         onClick={() => setActiveTab("incidents")}
@@ -82,6 +80,16 @@ export default function App() {
                         }`}
                     >
                         Incidents
+                    </button>
+                    <button
+                        onClick={() => setActiveTab("notifications")}
+                        className={`px-4 py-2 rounded text-sm font-medium ${
+                            activeTab === "notifications"
+                                ? "bg-blue-600 text-white"
+                                : "bg-gray-800 text-gray-400 hover:text-white"
+                        }`}
+                    >
+                        Notifications
                     </button>
                     <button
                         onClick={() => setActiveTab("publish")}
@@ -95,10 +103,10 @@ export default function App() {
                     </button>
                 </div>
 
-                {/* Content */}
                 {activeTab === "incidents" && (
                     <IncidentsList key={refreshKey} />
                 )}
+                {activeTab === "notifications" && <NotificationsList />}
                 {activeTab === "publish" && (
                     <EventForm
                         onEventPublished={() => setRefreshKey((k) => k + 1)}
