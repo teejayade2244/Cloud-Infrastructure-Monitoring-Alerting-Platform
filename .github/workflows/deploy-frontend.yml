@@ -1,4 +1,5 @@
 name: Deploy Frontend to Azure Static Web Apps
+
 on:
   push:
     branches:
@@ -21,7 +22,7 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: Frontend/package-lock.json
+          cache-dependency-path: 'Frontend/package-lock.json'
 
       - name: Install dependencies
         run: npm ci
@@ -40,5 +41,3 @@ jobs:
           app_location: Frontend
           output_location: dist
           skip_app_build: true
-
-# Static web app deployment
