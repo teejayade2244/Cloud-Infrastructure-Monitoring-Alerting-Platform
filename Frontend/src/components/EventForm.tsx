@@ -108,7 +108,7 @@ export default function EventForm({ onEventPublished }: Props) {
                     disabled={submitting}
                     className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded text-sm disabled:opacity-50"
                 >
-                    {submitting ? "Publishing.." : "Publish Event"}
+                    {submitting ? "Publishing...." : "Publish Event"}
                 </button>
                 {result && <p className="text-sm text-gray-300">{result}</p>}
             </div>
