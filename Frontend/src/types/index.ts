@@ -17,14 +17,16 @@ export interface IncidentUpdate {
     timestamp: string
 }
 
+export type Status = "open" | "investigating" | "resolved"
+
 export interface Incident {
     id: string
     eventId: string
     title: string
     description: string
-    severity: string
+    severity: Severity
     environment: string
-    status: string
+    status: Status
     assignedTo: string
     source: string
     createdAt: string

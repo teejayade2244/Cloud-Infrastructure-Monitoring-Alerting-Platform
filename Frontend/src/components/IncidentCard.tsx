@@ -1,5 +1,12 @@
-import type { Incident } from "../types"
-import { useState } from "react"
+import type { Incident, Severity, Status } from "../types"
+import { useState, type ChangeEvent } from "react"
+
+interface UpdateForm {
+    status: Status
+    assignedTo?: string
+    message: string
+    updatedBy: string
+}
 import { incidentsApi } from "../services/api"
 
 interface Props {
@@ -7,7 +14,7 @@ interface Props {
     onUpdate: () => void
 }
 
-const severityColors: Record<string, string> = {
+const severityColors: Record<Severity, string> = {
     critical: "bg-red-500",
     high: "bg-orange-500",
     medium: "bg-yellow-500",
@@ -15,7 +22,7 @@ const severityColors: Record<string, string> = {
     info: "bg-gray-500",
 }
 
-const statusColors: Record<string, string> = {
+const statusColors: Record<Status, string> = {
     open: "text-red-400",
     investigating: "text-yellow-400",
     resolved: "text-green-400",
@@ -23,15 +30,15 @@ const statusColors: Record<string, string> = {
 
 export default function IncidentCard({ incident, onUpdate }: Props) {
     const [expanded, setExpanded] = useState(false)
-    const [updating, setUpdating] = useState(false)
-    const [updateForm, setUpdateForm] = useState({
-        status: incident.status,
+    const [updating, setUpdating] = useState<boolean>(false)
+    const [updateForm, setUpdateForm] = useState<UpdateForm>({
+        status: incident.status as Status,
         assignedTo: incident.assignedTo,
         message: "",
         updatedBy: "",
     })
 
-    const handleUpdate = async () => {
+    const handleUpdate = async (): Promise<void> => {
         if (!updateForm.message || !updateForm.updatedBy) return
         setUpdating(true)
         try {
@@ -135,10 +142,10 @@ export default function IncidentCard({ incident, onUpdate }: Props) {
                             <select
                                 className="bg-gray-900 border border-gray-600 text-white rounded px-3 py-2 text-sm"
                                 value={updateForm.status}
-                                onChange={(e) =>
+                                onChange={(e: ChangeEvent<HTMLSelectElement>) =>
                                     setUpdateForm((prev) => ({
                                         ...prev,
-                                        status: e.target.value,
+                                        status: e.target.value as Status,
                                     }))
                                 }
                             >
@@ -152,7 +159,7 @@ export default function IncidentCard({ incident, onUpdate }: Props) {
                                 className="bg-gray-900 border border-gray-600 text-white rounded px-3 py-2 text-sm"
                                 placeholder="Assign to..."
                                 value={updateForm.assignedTo}
-                                onChange={(e) =>
+                                onChange={(e: ChangeEvent<HTMLInputElement>) =>
                                     setUpdateForm((prev) => ({
                                         ...prev,
                                         assignedTo: e.target.value,
@@ -165,7 +172,7 @@ export default function IncidentCard({ incident, onUpdate }: Props) {
                                 className="bg-gray-900 border border-gray-600 text-white rounded px-3 py-2 text-sm"
                                 placeholder="Your name..."
                                 value={updateForm.updatedBy}
-                                onChange={(e) =>
+                                onChange={(e: ChangeEvent<HTMLInputElement>) =>
                                     setUpdateForm((prev) => ({
                                         ...prev,
                                         updatedBy: e.target.value,
@@ -177,7 +184,7 @@ export default function IncidentCard({ incident, onUpdate }: Props) {
                                 placeholder="Describe the update..."
                                 rows={3}
                                 value={updateForm.message}
-                                onChange={(e) =>
+                                onChange={(e: ChangeEvent<HTMLTextAreaElement>) =>
                                     setUpdateForm((prev) => ({
                                         ...prev,
                                         message: e.target.value,
