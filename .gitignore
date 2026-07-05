@@ -18,7 +18,10 @@ logs/
 *.tsbuildinfo
 
 # Azure Functions / locals
-.local.settings.json
+local.settings.json
+local.setiings.json
+*.local.settings.json
+*.local.setiings.json
 
 # Visual Studio / .NET
 bin/
