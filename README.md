@@ -52,3 +52,18 @@ Client → APIM → Events Service → Cosmos DB (event saved)
             (incident)
 
 Client → APIM → Incidents Service → Cosmos DB (read/update incidents)
+
+observebility flow
+Your services emit telemetry
+        ↓
+Application Insights collects it
+        ↓
+Log Analytics Workspace stores it (queryable with KQL)
+        ↓
+Alerts fire when thresholds breached
+        ↓
+Email notification received
+        ↓
+Engineer sees alert → opens InfraMonitor dashboard
+        ↓
+Creates/updates incident to track resolution

@@ -1,7 +1,10 @@
 const { app } = require("@azure/functions")
 const { CosmosClient } = require("@azure/cosmos")
 const { DefaultAzureCredential } = require("@azure/identity")
-
+const appInsights = require("applicationinsights")
+if (!appInsights.defaultClient) {
+    appInsights.setup(process.env.APPLICATIONINSIGHTS_CONNECTION_STRING).start()
+}
 const credential = new DefaultAzureCredential()
 const cosmosClient = new CosmosClient({
     endpoint: process.env.COSMOS_ENDPOINT,

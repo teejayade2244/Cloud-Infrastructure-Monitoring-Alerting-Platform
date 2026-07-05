@@ -1,45 +1,11 @@
 const express = require("express")
-const { CosmosClient } = require("@azure/cosmos")
-const { ServiceBusClient } = require("@azure/service-bus")
-const { DefaultAzureCredential } = require("@azure/identity")
 const { v4: uuidv4 } = require("uuid")
 const { validateEvent } = require("../middleware/validate")
+const { createAzureClients } = require("../azureConfig")
 
 const router = express.Router()
 
-const credential = new DefaultAzureCredential({
-    managedIdentityClientId: process.env.AZURE_CLIENT_ID,
-})
-
-const cosmosEndpoint = process.env.COSMOS_ENDPOINT
-const serviceBusNamespace = process.env.SERVICEBUS_NAMESPACE
-
-if (!cosmosEndpoint) {
-    throw new Error(
-        "Missing required environment variable COSMOS_ENDPOINT. Set it to your Cosmos DB account endpoint, e.g. https://<account>.documents.azure.com:443/",
-    )
-}
-
-if (!serviceBusNamespace) {
-    throw new Error(
-        "Missing required environment variable SERVICEBUS_NAMESPACE. Set it to your Service Bus fully qualified namespace, e.g. <namespace>.servicebus.windows.net",
-    )
-}
-if (!process.env.COSMOS_ENDPOINT) {
-    throw new Error("Missing required environment variable COSMOS_ENDPOINT...")
-}
-// Cosmos DB setup
-const cosmosClient = new CosmosClient({
-    endpoint: cosmosEndpoint,
-    aadCredentials: credential,
-})
-const database = cosmosClient.database("InfraMonitorDB")
-const eventsContainer = database.container("Events")
-
-// Service Bus setup
-const serviceBusClient = new ServiceBusClient(serviceBusNamespace, credential, {
-    transportType: "AmqpWebSockets",
-})
+const { eventsContainer, serviceBusClient } = createAzureClients(process.env)
 
 // POST /events - publish a new infrastructure event
 router.post("/", validateEvent, async (req, res) => {
