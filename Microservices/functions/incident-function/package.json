@@ -1,19 +1,16 @@
 {
-  "name": "",
+  "name": "incident-functions",
   "version": "1.0.0",
-  "description": "",
-  "main": "src/functions/*.js",
+  "description": "CreateIncident job entrypoint, run as a Container Apps Job triggered by Service Bus subscription depth. SendNotification was removed - the Logic App now handles all notification processing.",
+  "main": "src/create-incident.js",
   "scripts": {
-    "start": "func start",
+    "start:create-incident": "node src/create-incident.js",
     "test": "echo \"No tests yet...\""
   },
   "dependencies": {
     "@azure/cosmos": "^4.9.3",
-    "@azure/functions": "^4.0.0",
     "@azure/identity": "^4.13.1",
+    "@azure/service-bus": "^7.9.5",
     "applicationinsights": "^3.15.1"
-  },
-  "devDependencies": {
-    "azure-functions-core-tools": "^4.x"
   }
 }

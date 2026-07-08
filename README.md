@@ -67,3 +67,18 @@ Email notification received
 Engineer sees alert → opens InfraMonitor dashboard
         ↓
 Creates/updates incident to track resolution
+
+Critical event published
+        ↓
+Events Service → Cosmos DB (event saved)
+              → Service Bus topic
+                    ↓
+        ┌───────────┴──────────────┐
+        ↓                          ↓
+create-incident              logic-app-notifications
+subscription                 subscription
+        ↓                          ↓
+Container Apps Job           Logic App
+(creates incident)           (sends email) ✅
+        ↓
+Cosmos DB (incident saved)

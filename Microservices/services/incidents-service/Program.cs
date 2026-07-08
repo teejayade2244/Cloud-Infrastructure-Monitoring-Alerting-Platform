@@ -5,10 +5,6 @@ using incidents_service.Middleware;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddApplicationInsightsTelemetry(builder.Configuration);
-builder.Services.Configure<TelemetryConfiguration>(config =>
-{
-    config.TelemetryInitializers.Add(new CloudRoleNameTelemetryInitializer("incidents-service"));
-});
 
 // Azure credential - uses managed identity in Azure, CLI locally
 var credential = new DefaultAzureCredential(new DefaultAzureCredentialOptions
