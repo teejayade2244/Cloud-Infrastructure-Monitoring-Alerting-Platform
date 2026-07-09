@@ -1,7 +1,15 @@
 locals {
+  # trimspace guards against a stray trailing newline/space in the GitHub repository Variables
+  # that feed these in CI (TF_VAR_PROJECT / TF_VAR_ENVIRONMENT) - easy to introduce by pasting
+  # into the Variables UI, and since these get concatenated into resource names throughout this
+  # project, a single invisible whitespace character produces exactly the kind of "name may only
+  # contain alphanumeric characters..." error Azure returns, with no obvious cause in the diff.
+  project     = trimspace(var.project)
+  environment = trimspace(var.environment)
+
   common_tags = {
-    environment = var.environment
-    project     = var.project
+    environment = local.environment
+    project     = local.project
     managed_by  = "terraform"
   }
 
@@ -21,7 +29,7 @@ locals {
 }
 
 resource "azurerm_resource_group" "main" {
-  name     = "${var.project}-rg-${var.environment}"
+  name     = "${local.project}-rg-${local.environment}"
   location = var.location
   tags     = local.common_tags
 }
@@ -29,8 +37,8 @@ resource "azurerm_resource_group" "main" {
 module "networking" {
   source = "./modules/networking"
 
-  name_prefix         = var.project
-  environment         = var.environment
+  name_prefix         = local.project
+  environment         = local.environment
   location            = var.location
   resource_group_name = azurerm_resource_group.main.name
   tags                = local.common_tags
@@ -39,8 +47,8 @@ module "networking" {
 module "observability" {
   source = "./modules/observability"
 
-  name_prefix         = var.project
-  environment         = var.environment
+  name_prefix         = local.project
+  environment         = local.environment
   location            = var.location
   resource_group_name = azurerm_resource_group.main.name
   tags                = local.common_tags
@@ -49,8 +57,8 @@ module "observability" {
 module "identities" {
   source = "./modules/identities"
 
-  name_prefix         = var.project
-  environment         = var.environment
+  name_prefix         = local.project
+  environment         = local.environment
   location            = var.location
   resource_group_name = azurerm_resource_group.main.name
   tags                = local.common_tags
@@ -59,7 +67,7 @@ module "identities" {
 module "container_registry" {
   source = "./modules/container_registry"
 
-  name                = "${var.project}acr${var.environment}"
+  name                = "${local.project}acr${local.environment}"
   location            = var.location
   resource_group_name = azurerm_resource_group.main.name
   tags                = local.common_tags
@@ -74,7 +82,7 @@ module "container_registry" {
 module "servicebus" {
   source = "./modules/servicebus"
 
-  name                = "${var.project}sb-${var.environment}"
+  name                = "${local.project}sb-${local.environment}"
   location            = var.location
   resource_group_name = azurerm_resource_group.main.name
   tags                = local.common_tags
@@ -86,7 +94,7 @@ module "servicebus" {
 module "cosmos" {
   source = "./modules/cosmos"
 
-  name                = "${var.project}-cosmos-${var.environment}"
+  name                = "${local.project}-cosmos-${local.environment}"
   location            = var.location
   resource_group_name = azurerm_resource_group.main.name
   tags                = local.common_tags
@@ -105,7 +113,7 @@ module "cosmos" {
 module "keyvault" {
   source = "./modules/keyvault"
 
-  name                = "${var.project}-kv-${var.environment}"
+  name                = "${local.project}-kv-${local.environment}"
   location            = var.location
   resource_group_name = azurerm_resource_group.main.name
   tags                = local.common_tags
@@ -167,14 +175,14 @@ module "container_apps" {
 # module "functions" {
 #   source = "./modules/functions"
 #
-#   name_prefix         = var.project
-#   environment         = var.environment
+#   name_prefix         = local.project
+#   environment         = local.environment
 #   location            = var.functions_location
 #   resource_group_name = azurerm_resource_group.main.name
 #   tags                = local.common_tags
 #
-#   storage_account_name = "${var.project}func${var.environment}"
-#   function_app_name    = "${var.project}-functions-${var.environment}"
+#   storage_account_name = "${local.project}func${local.environment}"
+#   function_app_name    = "${local.project}-functions-${local.environment}"
 #   service_plan_name    = var.functions_service_plan_name
 #
 #   functions_identity_id = module.identities.functions_identity_id
@@ -191,7 +199,7 @@ module "apim" {
   count  = var.create_apim ? 1 : 0
   source = "./modules/apim"
 
-  name                = "${var.project}-apim-${var.environment}"
+  name                = "${local.project}-apim-${local.environment}"
   location            = var.location
   resource_group_name = azurerm_resource_group.main.name
   tags                = local.common_tags
@@ -205,8 +213,8 @@ module "logic_app" {
 
   resource_group_name = azurerm_resource_group.main.name
   location            = var.location
-  project             = var.project
-  environment         = var.environment
+  project             = local.project
+  environment         = local.environment
   tags                = local.common_tags
 
   service_bus_namespace_id = module.servicebus.namespace_id
@@ -217,7 +225,7 @@ module "logic_app" {
 module "frontend" {
   source = "./modules/frontend"
 
-  name                = "${var.project}-frontend-${var.environment}"
+  name                = "${local.project}-frontend-${local.environment}"
   location            = var.frontend_location
   resource_group_name = azurerm_resource_group.main.name
   tags                = local.common_tags
@@ -231,8 +239,8 @@ module "frontdoor" {
   source = "./modules/frontdoor"
 
   resource_group_name = azurerm_resource_group.main.name
-  project             = var.project
-  environment         = var.environment
+  project             = local.project
+  environment         = local.environment
   tags                = local.common_tags
 
   static_web_app_hostname = module.frontend.static_web_app_hostname
@@ -245,8 +253,8 @@ module "runner" {
   resource_group_name = azurerm_resource_group.main.name
   resource_group_id   = azurerm_resource_group.main.id
   location            = var.location
-  project             = var.project
-  environment         = var.environment
+  project             = local.project
+  environment         = local.environment
   tags                = local.common_tags
 
   runner_subnet_id      = module.networking.runner_subnet_id
