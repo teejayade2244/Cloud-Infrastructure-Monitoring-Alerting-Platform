@@ -27,8 +27,7 @@ provider "azurerm" {
   client_id       = var.client_id
   use_oidc        = true
 
-  # v4 only auto-registers a minimal "core" set of resource providers. Explicitly register
-  # the ones this project actually uses instead of the SP needing subscription-wide "all" rights.
+
   resource_provider_registrations = "none"
   resource_providers_to_register = [
     "Microsoft.App",
