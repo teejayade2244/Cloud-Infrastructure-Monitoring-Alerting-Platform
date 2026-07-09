@@ -137,7 +137,7 @@ jobs:
     name: Terraform Apply
     needs: terraform-plan
     # Never on pull_request, and only when the ref is main - covers both an automatic push to
-    # main and a manual workflow_dispatch run targeting main. Runs automatically once the plan
+    # main and a manual workflow_dispatch run targeting main. 
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: [self-hosted, azure, uksouth]
     permissions:
