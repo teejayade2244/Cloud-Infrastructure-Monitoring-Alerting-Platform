@@ -88,6 +88,7 @@ jobs:
           TF_VAR_location: ${{ vars.TF_VAR_LOCATION }}
           TF_VAR_project: ${{ vars.TF_VAR_PROJECT }}
           TF_VAR_create_apim: ${{ vars.TF_VAR_CREATE_APIM }}
+          TF_VAR_create_frontdoor: ${{ vars.TF_VAR_CREATE_FRONTDOOR }}
           TF_VAR_keyvault_allowed_ip_ranges: ${{ vars.TF_VAR_KEYVAULT_ALLOWED_IP_RANGES }}
           TF_VAR_cosmos_allowed_ip_ranges: ${{ vars.TF_VAR_COSMOS_ALLOWED_IP_RANGES }}
           TF_VAR_runner_ssh_public_key: ${{ secrets.TF_VAR_RUNNER_SSH_PUBLIC_KEY }}
@@ -194,6 +195,7 @@ jobs:
           TF_VAR_location: ${{ vars.TF_VAR_LOCATION }}
           TF_VAR_project: ${{ vars.TF_VAR_PROJECT }}
           TF_VAR_create_apim: ${{ vars.TF_VAR_CREATE_APIM }}
+          TF_VAR_create_frontdoor: ${{ vars.TF_VAR_CREATE_FRONTDOOR }}
           TF_VAR_keyvault_allowed_ip_ranges: ${{ vars.TF_VAR_KEYVAULT_ALLOWED_IP_RANGES }}
           TF_VAR_cosmos_allowed_ip_ranges: ${{ vars.TF_VAR_COSMOS_ALLOWED_IP_RANGES }}
           TF_VAR_runner_ssh_public_key: ${{ secrets.TF_VAR_RUNNER_SSH_PUBLIC_KEY }}
