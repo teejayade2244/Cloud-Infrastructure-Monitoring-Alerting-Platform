@@ -4,8 +4,9 @@ locals {
   # into the Variables UI, and since these get concatenated into resource names throughout this
   # project, a single invisible whitespace character produces exactly the kind of "name may only
   # contain alphanumeric characters..." error Azure returns, with no obvious cause in the diff.
-  project     = trimspace(var.project)
-  environment = trimspace(var.environment)
+  project         = trimspace(var.project)
+  environment     = trimspace(var.environment)
+  publisher_email = trimspace(var.publisher_email)
 
   common_tags = {
     environment = local.environment
@@ -205,7 +206,7 @@ module "apim" {
   tags                = local.common_tags
 
   publisher_name  = "InfraMonitor"
-  publisher_email = var.publisher_email
+  publisher_email = local.publisher_email
 }
 
 module "logic_app" {
