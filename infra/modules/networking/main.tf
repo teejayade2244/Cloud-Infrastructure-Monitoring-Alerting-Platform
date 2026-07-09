@@ -39,6 +39,52 @@ resource "azurerm_subnet" "gateway" {
   address_prefixes     = var.gateway_subnet_prefix
 }
 
+# Dedicated subnet for the GitHub Actions runner VM - it cannot share apps-subnet, since Azure
+# forbids any other resource type in a subnet delegated to Microsoft.App/environments
+# (SubnetWithExternalResourcesCannotBeUsedByOtherResources).
+resource "azurerm_subnet" "runner" {
+  name                 = "runner-subnet"
+  resource_group_name  = var.resource_group_name
+  virtual_network_name = azurerm_virtual_network.main.name
+  address_prefixes     = var.runner_subnet_prefix
+}
+
+resource "azurerm_network_security_group" "runner" {
+  name                = "runner-subnet-nsg"
+  location            = var.location
+  resource_group_name = var.resource_group_name
+  tags                = var.tags
+
+  security_rule {
+    name                       = "Allow-Outbound-To-Data-Subnet"
+    priority                   = 100
+    direction                  = "Outbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_range     = "443"
+    source_address_prefix      = "*"
+    destination_address_prefix = var.data_subnet_prefix[0]
+  }
+
+  security_rule {
+    name                       = "Allow-Outbound-Internet"
+    priority                   = 110
+    direction                  = "Outbound"
+    access                     = "Allow"
+    protocol                   = "Tcp"
+    source_port_range          = "*"
+    destination_port_ranges    = ["80", "443"]
+    source_address_prefix      = "*"
+    destination_address_prefix = "Internet"
+  }
+}
+
+resource "azurerm_subnet_network_security_group_association" "runner" {
+  subnet_id                 = azurerm_subnet.runner.id
+  network_security_group_id = azurerm_network_security_group.runner.id
+}
+
 # --- apps-subnet NSG ---
 
 resource "azurerm_network_security_group" "apps" {

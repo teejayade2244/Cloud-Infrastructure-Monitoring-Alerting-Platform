@@ -8,12 +8,16 @@ location               = "uksouth"
 project                = "inframonitor"
 create_apim            = false
 
-# we set public_network_access_enabled = false on both Cosmos DB and Key Vault. That means ALL public traffic is blocked 
-# When Terraform runs it needs to:
-# Write secrets to Key Vault (cosmos-endpoint, servicebus-namespace)
-# Create Cosmos DB databases and containers
+# keyvault_allowed_ip_ranges / cosmos_allowed_ip_ranges intentionally omitted (default []).
+# CI now runs on a self-hosted runner inside apps-subnet, reaching Key Vault/Cosmos DB via their
+# private endpoints - no public IP exception needed there anymore. If you need to run
+# terraform apply from your own laptop against these firewalled resources, either add your IP
+# temporarily (-var 'keyvault_allowed_ip_ranges=["<your-ip>/32"]' -var 'cosmos_allowed_ip_ranges=["<your-ip>/32"]')
+# or run it from inside the VNet (e.g. via the runner VM or a bastion-connected host).
 
-# If public access is fully disabled, Terraform can't reach these services from your laptop and the apply will fail with a connection error.
-# The IP allowlist is a temporary exception — it says "block everyone EXCEPT this specific IP address".
-keyvault_allowed_ip_ranges = ["82.11.47.6/32"]
-cosmos_allowed_ip_ranges   = ["82.11.47.6/32"]
+# Public key only (not the private key) - safe to commit, but fill in your own before applying.
+# Generate a dedicated keypair for this VM, e.g.: ssh-keygen -t ed25519 -f ./runner_key -N ""
+runner_ssh_public_key = "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQCsclyQyAvGejmJI9KcbDqfOjbz/m/KIS+mF3BcE1mZ3U+4KhaoIpAao6PA27ixmkUVFv7HiU5IdZhPbe/3U8zWWHafaES+9cZl/yjQoR0dK+L+XpwksMTds5nsnEVJeV2pmB3N/0f8xbMeSFN+CjPqdd5J+z+fuE2pHAgAVGBcqRwKVMvG5os3iYbeXtYhmo4pK75bSPdrlViy+JCvsb4e2VqLriHitfHcJUKNwWSlNgZdbEY68YeCsdkMySxenJNWSRiTdInNfKindZtA0weG/rCjqU+1khwRg1gDags/TjSW31CjJMscoqgSdbOw+wz/0ARmPqjbyhJO682zFj3WIROg0ZCJ0j26zndsPuGXaOb4L0YyadQCCHQ24Yqc9bcYW2SmV9HXWMat64yU/kFo110Z5OXHl1dIa5olW7pRnpgnZ9xg12jTNJkQ96+6Ph1IN50u3tZb3JMt6GafuHbv5JeEMhv97CIdwoAsyHHiLdMajnYko2e0XGe6RNGoi3crYtaNyU6qyQ/HjAQxK6xLLHjEuxO5aS0PXflc9lU5AXElcLI1m8bbrzY+NqnLpOc4wJ8SIe5kL+6uR8QZPy0QUbpMffZvLa/pMm8lqKaHP0jvQzCAXs5rRO9h3UwykBeOcs+zO5uSK+b0hT+qOyCrnEw91G3Zy+wLg9KZl5Irmw== github-runner"
+
+github_org  = "teejayade2244"
+github_repo = "Cloud-Infrastructure-Monitoring-Alerting-Platform"

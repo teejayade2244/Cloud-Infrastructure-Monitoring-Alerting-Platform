@@ -110,3 +110,13 @@ output "static_web_app_api_key" {
 output "apim_gateway_url" {
   value = var.create_apim ? module.apim[0].gateway_url : null
 }
+
+# --- GitHub Actions runner ---
+
+output "runner_private_ip" {
+  value = module.runner.runner_private_ip
+}
+
+output "runner_vm_name" {
+  value = module.runner.runner_vm_name
+}

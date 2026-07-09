@@ -18,6 +18,10 @@ output "gateway_subnet_id" {
   value = azurerm_subnet.gateway.id
 }
 
+output "runner_subnet_id" {
+  value = azurerm_subnet.runner.id
+}
+
 output "cosmos_private_dns_zone_id" {
   value = azurerm_private_dns_zone.cosmos.id
 }

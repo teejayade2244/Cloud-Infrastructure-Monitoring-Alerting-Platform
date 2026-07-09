@@ -1,4 +1,12 @@
-data "azurerm_client_config" "current" {}
+# Looked up explicitly by client_id rather than via data.azurerm_client_config.current, which
+# resolves to whichever identity happens to be running Terraform right now (the human operator
+# locally, or the SP in CI) - using that dynamically caused Terraform to destroy the SP's own
+# Key Vault Secrets Officer grant every time a human ran apply locally, then recreate it the next
+# time CI ran, flip-flopping depending on who applied last. This is a fixed, known identity
+# regardless of who's currently authenticated.
+data "azuread_service_principal" "terraform_sp" {
+  client_id = var.client_id
+}
 
 locals {
   common_tags = {
@@ -11,7 +19,7 @@ locals {
   # principal in some setups, so this is passed through toset() downstream.
   keyvault_officer_principal_ids = [
     var.current_user_object_id,
-    data.azurerm_client_config.current.object_id,
+    data.azuread_service_principal.terraform_sp.object_id,
   ]
 }
 
@@ -216,4 +224,26 @@ module "frontend" {
   location            = var.frontend_location
   resource_group_name = azurerm_resource_group.main.name
   tags                = local.common_tags
+}
+
+module "runner" {
+  source = "./modules/runner"
+
+  resource_group_name = azurerm_resource_group.main.name
+  resource_group_id   = azurerm_resource_group.main.id
+  location            = var.location
+  project             = var.project
+  environment         = var.environment
+  tags                = local.common_tags
+
+  runner_subnet_id      = module.networking.runner_subnet_id
+  runner_ssh_public_key = var.runner_ssh_public_key
+}
+
+module "oidc" {
+  source = "./modules/oidc"
+
+  github_org          = var.github_org
+  github_repo         = var.github_repo
+  terraform_client_id = var.client_id
 }

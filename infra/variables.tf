@@ -15,10 +15,10 @@ variable "client_id" {
 }
 
 variable "client_secret" {
-  description = "Service principal client secret used by Terraform. Supply via TF_VAR_client_secret env var, not tfvars. Leave unset (null) to fall back to Azure CLI (az login) authentication instead."
   type        = string
   sensitive   = true
-  default     = null
+  default     = ""
+  description = "Not used when OIDC is enabled. Kept for local development."
 }
 
 variable "environment" {
@@ -93,4 +93,20 @@ variable "functions_service_plan_name" {
   description = "Override the service plan name - needed when testing functions_location against a region other than uksouth, since the default name is already bound to uksouth. Empty string uses the default naming convention."
   type        = string
   default     = ""
+}
+
+variable "runner_ssh_public_key" {
+  description = "SSH public key for the GitHub Actions runner VM"
+  type        = string
+  sensitive   = true
+}
+
+variable "github_org" {
+  description = "GitHub username/organisation that owns the repo (used for OIDC federated credential subjects)"
+  type        = string
+}
+
+variable "github_repo" {
+  description = "GitHub repository name (used for OIDC federated credential subjects)"
+  type        = string
 }
