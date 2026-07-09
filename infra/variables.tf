@@ -52,6 +52,10 @@ variable "current_user_object_id" {
 variable "terraform_sp_object_id" {
   description = "Object ID of the service principal Terraform runs as, granted Key Vault Secrets Officer access. A plain known value rather than a data source lookup - see the comment in main.tf's locals block for why."
   type        = string
+  # Empty default so a missing value fails fast at apply (a real Azure API error on the role
+  # assignment) instead of Terraform hanging on an interactive prompt in CI. terraform.tfvars
+  # already sets the real value for local runs.
+  default = ""
 }
 
 variable "create_apim" {
@@ -110,5 +114,9 @@ variable "runner_ssh_public_key" {
   description = "SSH public key for the GitHub Actions runner VM"
   type        = string
   sensitive   = true
+  # Empty default so a missing value fails fast at apply (a real Azure API error on the VM's
+  # admin_ssh_key) instead of Terraform hanging on an interactive prompt in CI. terraform.tfvars
+  # already sets the real value for local runs.
+  default = ""
 }
 

@@ -55,7 +55,6 @@ jobs:
           ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
           ARM_SUBSCRIPTION_ID: ${{ secrets.ARM_SUBSCRIPTION_ID }}
           ARM_USE_OIDC: "true"
-          
 
       # Never blocks the pipeline - a formatting nit shouldn't stop a plan from being visible.
       - name: Terraform Format Check
@@ -92,6 +91,7 @@ jobs:
           TF_VAR_keyvault_allowed_ip_ranges: ${{ vars.TF_VAR_KEYVAULT_ALLOWED_IP_RANGES }}
           TF_VAR_cosmos_allowed_ip_ranges: ${{ vars.TF_VAR_COSMOS_ALLOWED_IP_RANGES }}
           TF_VAR_runner_ssh_public_key: ${{ secrets.TF_VAR_RUNNER_SSH_PUBLIC_KEY }}
+          TF_VAR_terraform_sp_object_id: ${{ secrets.TF_VAR_TERRAFORM_SP_OBJECT_ID }}
 
       - name: Save plan output as text
         working-directory: ${{ env.TF_WORKING_DIR }}
@@ -179,7 +179,6 @@ jobs:
       - name: Terraform Apply
         working-directory: ${{ env.TF_WORKING_DIR }}
         run: terraform apply -auto-approve tfplan
-        
         env:
           ARM_CLIENT_ID: ${{ secrets.ARM_CLIENT_ID }}
           ARM_TENANT_ID: ${{ secrets.ARM_TENANT_ID }}
@@ -196,6 +195,8 @@ jobs:
           TF_VAR_create_apim: ${{ vars.TF_VAR_CREATE_APIM }}
           TF_VAR_keyvault_allowed_ip_ranges: ${{ vars.TF_VAR_KEYVAULT_ALLOWED_IP_RANGES }}
           TF_VAR_cosmos_allowed_ip_ranges: ${{ vars.TF_VAR_COSMOS_ALLOWED_IP_RANGES }}
+          TF_VAR_runner_ssh_public_key: ${{ secrets.TF_VAR_RUNNER_SSH_PUBLIC_KEY }}
+          TF_VAR_terraform_sp_object_id: ${{ secrets.TF_VAR_TERRAFORM_SP_OBJECT_ID }}
 
       - name: Terraform Output
         working-directory: ${{ env.TF_WORKING_DIR }}
