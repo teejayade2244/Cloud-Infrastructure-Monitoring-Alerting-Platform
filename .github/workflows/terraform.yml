@@ -199,11 +199,6 @@ jobs:
           TF_VAR_environment: ${{ vars.TF_VAR_ENVIRONMENT }}
           TF_VAR_location: ${{ vars.TF_VAR_LOCATION }}
           TF_VAR_project: ${{ vars.TF_VAR_PROJECT }}
-          # bool-typed Terraform variables reject an empty string outright (unlike string-typed
-          # ones), so if the GitHub repo Variable below isn't configured yet, vars.X resolves to
-          # "" and Terraform fails validating the type - regardless of variables.tf's own default,
-          # which only applies when the env var is fully unset, not set-but-invalid. The ||
-          # fallback here keeps that failure from happening even if the Variable is never created.
           TF_VAR_create_apim: ${{ vars.TF_VAR_CREATE_APIM || 'true' }}
           TF_VAR_create_frontdoor: ${{ vars.TF_VAR_CREATE_FRONTDOOR || 'true' }}
           TF_VAR_keyvault_allowed_ip_ranges: ${{ vars.TF_VAR_KEYVAULT_ALLOWED_IP_RANGES }}

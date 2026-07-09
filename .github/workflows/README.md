@@ -73,9 +73,16 @@ Configure these under **Settings → Secrets and variables → Actions → Varia
 | `TF_VAR_ENVIRONMENT` | `dev` |
 | `TF_VAR_LOCATION` | `uksouth` |
 | `TF_VAR_PROJECT` | `inframonitor` |
-| `TF_VAR_CREATE_APIM` | `false` |
+| `TF_VAR_CREATE_APIM` | `true` |
+| `TF_VAR_CREATE_FRONTDOOR` | `true` |
 | `TF_VAR_KEYVAULT_ALLOWED_IP_RANGES` | `[]` |
 | `TF_VAR_COSMOS_ALLOWED_IP_RANGES` | `[]` |
+
+`TF_VAR_CREATE_APIM`/`TF_VAR_CREATE_FRONTDOOR` gate a Developer-tier APIM instance and Front Door
+- both cost money and APIM is slow to provision (30-60+ min). The workflow falls back to `true`
+if either Variable is entirely unset, but if one is explicitly set to the literal text `false`
+(e.g. left over from before Front Door existed, when APIM defaulted off), that value passes
+through as-is - the fallback only triggers on a missing/empty Variable, not an explicit `false`.
 
 The last two are empty lists now - the self-hosted runner reaches Key Vault/Cosmos DB via their
 private endpoints, so no public IP allowlist entry is needed for CI. They still exist as
