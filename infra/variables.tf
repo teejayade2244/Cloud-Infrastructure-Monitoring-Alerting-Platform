@@ -60,6 +60,12 @@ variable "create_apim" {
   default     = true
 }
 
+variable "create_frontdoor" {
+  type        = bool
+  description = "Whether to create Front Door. Requires create_apim = true."
+  default     = true
+}
+
 variable "keyvault_allowed_ip_ranges" {
   description = "Public IP CIDRs (e.g. your egress IP) allowed through the Key Vault firewall while public network access is disabled. Needed so `terraform apply` can manage secrets from outside the VNet."
   type        = list(string)

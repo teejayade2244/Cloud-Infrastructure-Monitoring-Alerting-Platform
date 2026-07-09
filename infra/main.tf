@@ -223,6 +223,22 @@ module "frontend" {
   tags                = local.common_tags
 }
 
+# Depends on module.apim[0] existing, since api-origin needs a real gateway hostname - the
+# count expression ensures Front Door is only ever instantiated alongside APIM, so the
+# module.apim[0] reference below is never evaluated when APIM doesn't exist.
+module "frontdoor" {
+  count  = var.create_frontdoor && var.create_apim ? 1 : 0
+  source = "./modules/frontdoor"
+
+  resource_group_name = azurerm_resource_group.main.name
+  project             = var.project
+  environment         = var.environment
+  tags                = local.common_tags
+
+  static_web_app_hostname = module.frontend.static_web_app_hostname
+  apim_gateway_hostname   = replace(module.apim[0].apim_gateway_url, "https://", "")
+}
+
 module "runner" {
   source = "./modules/runner"
 

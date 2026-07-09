@@ -111,6 +111,12 @@ output "apim_gateway_url" {
   value = var.create_apim ? module.apim[0].gateway_url : null
 }
 
+# --- Front Door (only present when create_frontdoor = true and create_apim = true) ---
+
+output "frontdoor_endpoint_url" {
+  value = var.create_frontdoor && var.create_apim ? module.frontdoor[0].frontdoor_endpoint_url : null
+}
+
 # --- GitHub Actions runner ---
 
 output "runner_private_ip" {
