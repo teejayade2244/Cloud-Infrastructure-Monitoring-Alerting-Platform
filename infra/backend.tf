@@ -1,3 +1,4 @@
+
 terraform {
   backend "azurerm" {
     resource_group_name  = "infra-terraform-rg"
