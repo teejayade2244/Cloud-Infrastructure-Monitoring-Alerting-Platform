@@ -57,6 +57,8 @@ provider "azurerm" {
   }
 }
 
+
+
 # Authenticates as the same app registration/service principal as the azurerm provider above,
 # via the same OIDC federated credential - needed for the azuread_application data source and
 # federated identity credential resources in modules/oidc.
