@@ -14,10 +14,6 @@ terraform {
       source  = "hashicorp/time"
       version = "~> 0.11"
     }
-    azuread = {
-      source  = "hashicorp/azuread"
-      version = "~> 2.0"
-    }
   }
 }
 
@@ -27,7 +23,8 @@ provider "azurerm" {
   client_id       = var.client_id
   use_oidc        = true
 
-
+  # v4 only auto-registers a minimal "core" set of resource providers. Explicitly register
+  # the ones this project actually uses instead of the SP needing subscription-wide "all" rights.
   resource_provider_registrations = "none"
   resource_providers_to_register = [
     "Microsoft.App",
@@ -55,15 +52,4 @@ provider "azurerm" {
       prevent_deletion_if_contains_resources = false
     }
   }
-}
-
-
-
-# Authenticates as the same app registration/service principal as the azurerm provider above,
-# via the same OIDC federated credential - needed for the azuread_application data source and
-# federated identity credential resources in modules/oidc.
-provider "azuread" {
-  tenant_id = var.tenant_id
-  client_id = var.client_id
-  use_oidc  = true
 }

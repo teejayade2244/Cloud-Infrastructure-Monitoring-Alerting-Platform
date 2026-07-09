@@ -49,6 +49,11 @@ variable "current_user_object_id" {
   type        = string
 }
 
+variable "terraform_sp_object_id" {
+  description = "Object ID of the service principal Terraform runs as, granted Key Vault Secrets Officer access. A plain known value rather than a data source lookup - see the comment in main.tf's locals block for why."
+  type        = string
+}
+
 variable "create_apim" {
   description = "APIM Developer tier is expensive to leave running - set false to skip provisioning it"
   type        = bool
@@ -101,12 +106,3 @@ variable "runner_ssh_public_key" {
   sensitive   = true
 }
 
-variable "github_org" {
-  description = "GitHub username/organisation that owns the repo (used for OIDC federated credential subjects)"
-  type        = string
-}
-
-variable "github_repo" {
-  description = "GitHub repository name (used for OIDC federated credential subjects)"
-  type        = string
-}

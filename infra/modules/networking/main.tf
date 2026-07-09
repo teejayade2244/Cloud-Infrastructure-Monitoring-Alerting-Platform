@@ -179,15 +179,21 @@ resource "azurerm_network_security_group" "data" {
   resource_group_name = var.resource_group_name
   tags                = var.tags
 
+  # Covers both apps-subnet (Container Apps) and runner-subnet (self-hosted GitHub Actions
+  # runner) - both need to reach the Key Vault/Cosmos DB private endpoints that live here.
+  # Without runner-subnet here, traffic from the runner was silently dropped by the implicit
+  # Deny-All-Inbound rule below (not rejected by Key Vault/Cosmos's own firewall - the runner's
+  # requests never got that far), which is what produced "context deadline exceeded" rather than
+  # a clean 403.
   security_rule {
-    name                       = "Allow-Inbound-From-Apps-Subnet"
+    name                       = "Allow-Inbound-From-Apps-And-Runner-Subnets"
     priority                   = 100
     direction                  = "Inbound"
     access                     = "Allow"
     protocol                   = "Tcp"
     source_port_range          = "*"
     destination_port_range     = "443"
-    source_address_prefix      = var.apps_subnet_prefix[0]
+    source_address_prefixes    = [var.apps_subnet_prefix[0], var.runner_subnet_prefix[0]]
     destination_address_prefix = "*"
   }
 

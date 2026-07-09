@@ -8,21 +8,44 @@ Key Vault and Cosmos DB through their private endpoints without any public firew
 ## One-time setup: Federated Credential on the service principal
 
 OIDC needs the Azure AD app registration to trust GitHub's OIDC tokens for this specific repo.
-This is now managed by Terraform (`infra/modules/oidc/`) rather than manual `az cli` commands -
-`terraform apply` creates two federated credentials on the app registration: one for pushes to
-`main` (covers `push` and a manual `workflow_dispatch` run against `main`), one for pull requests
-(covers the `terraform-plan` job running on a PR).
+This is managed **manually** via `az cli`, not by Terraform - an earlier version of this project
+had Terraform manage it (`modules/oidc/`), but the service principal doesn't have Graph API
+permissions to read or write its own app registration (`data.azuread_*` lookups fail with a 403),
+and granting those permissions requires a higher-privileged Azure AD role than this project
+otherwise needs. The credentials already exist in Azure from that earlier setup and don't need
+to be recreated - this is here for reference / in case they ever need to be rebuilt from scratch.
 
-**Bootstrap chicken-and-egg**: the *first* apply that creates these credentials can't run from
-CI, since CI's own OIDC login depends on the credentials already existing. Run that first apply
-locally (`terraform apply`, authenticated via your own `az login` session) before ever relying on
-the GitHub Actions pipeline. After that, both the pipeline and further local runs authenticate
-via the federated credentials Terraform itself now manages.
+```bash
+# App registration's object ID (different from the client ID / app ID)
+az ad app show --id 3abb3608-c205-4047-80d5-c9407c8da8da --query id -o tsv
+# -> c7c82d2a-2fde-4fe8-8deb-255ad11e83f0
 
-If you ever rename the repo, move it to another org, or change which branch triggers apply,
-update `github_org`/`github_repo` in `terraform.tfvars` (or the `subject` values directly in
-`modules/oidc/main.tf` if the trigger ref changes) and re-apply - a mismatched subject fails
-`azure/login@v2` with an AADSTS70021 error, not something obviously about federated credentials.
+az ad app federated-credential create \
+  --id c7c82d2a-2fde-4fe8-8deb-255ad11e83f0 \
+  --parameters '{
+    "name": "inframonitor-github-actions-main",
+    "issuer": "https://token.actions.githubusercontent.com",
+    "subject": "repo:teejayade2244/Cloud-Infrastructure-Monitoring-Alerting-Platform:ref:refs/heads/main",
+    "audiences": ["api://AzureADTokenExchange"]
+  }'
+
+az ad app federated-credential create \
+  --id c7c82d2a-2fde-4fe8-8deb-255ad11e83f0 \
+  --parameters '{
+    "name": "inframonitor-github-actions-pr",
+    "issuer": "https://token.actions.githubusercontent.com",
+    "subject": "repo:teejayade2244/Cloud-Infrastructure-Monitoring-Alerting-Platform:pull_request",
+    "audiences": ["api://AzureADTokenExchange"]
+  }'
+
+# Verify what's currently configured:
+az ad app federated-credential list --id c7c82d2a-2fde-4fe8-8deb-255ad11e83f0 -o table
+```
+
+If you ever rename the repo, move it to another org, or change which branch triggers apply, the
+`subject` on these credentials has to be updated to match (delete and recreate, or use
+`az ad app federated-credential update`) - a mismatched subject fails `azure/login@v2` with an
+AADSTS70021 error, not something obviously about federated credentials.
 
 ## Required GitHub Secrets
 
@@ -102,10 +125,15 @@ another:
 
 ## Self-hosted runner
 
-The runner VM (`infra/modules/runner/`) lives in `apps-subnet`, has no public IP, and reaches
-Key Vault/Cosmos DB via their private endpoints. It's outbound-only (to github.com and Azure
-management endpoints) - no inbound rules are needed, and the apps-subnet NSG already allows
-outbound HTTPS to the internet via the default rule.
+The runner VM (`infra/modules/runner/`) lives in its own dedicated `runner-subnet` (not
+`apps-subnet`, which is delegated to `Microsoft.App/environments` for Container Apps and can't
+host any other resource type), has no public IP, and reaches Key Vault/Cosmos DB via their
+private endpoints in `data-subnet`. `data-subnet-nsg`'s inbound rule explicitly allows both
+`apps-subnet` and `runner-subnet` on port 443 - without the runner-subnet entry, its traffic gets
+silently dropped by the implicit deny-all, which looks like a hung connection
+("context deadline exceeded"), not a clean permission error. It's outbound-only (to github.com
+and Azure management endpoints) - no inbound rules are needed there, and `runner-subnet-nsg`
+already allows outbound HTTPS to the internet.
 
 After `terraform apply` creates the VM, it still needs to be registered with GitHub once -
 see the detailed step-by-step in `infra/modules/runner/outputs.tf`. In short: reach the VM via

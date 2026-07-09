@@ -1,13 +1,3 @@
-# Looked up explicitly by client_id rather than via data.azurerm_client_config.current, which
-# resolves to whichever identity happens to be running Terraform right now (the human operator
-# locally, or the SP in CI) - using that dynamically caused Terraform to destroy the SP's own
-# Key Vault Secrets Officer grant every time a human ran apply locally, then recreate it the next
-# time CI ran, flip-flopping depending on who applied last. This is a fixed, known identity
-# regardless of who's currently authenticated.
-data "azuread_service_principal" "terraform_sp" {
-  client_id = var.client_id
-}
-
 locals {
   common_tags = {
     environment = var.environment
@@ -15,11 +5,18 @@ locals {
     managed_by  = "terraform"
   }
 
+  # terraform_sp_object_id is a plain known value (not looked up via data.azuread_service_principal
+  # or data.azurerm_client_config.current) for two reasons: the SP lacks Graph API permissions to
+  # look itself up (403 on data.azuread_* calls), and resolving "whoever is currently running
+  # Terraform" dynamically caused Terraform to destroy the SP's own Key Vault Secrets Officer
+  # grant every time a human ran apply locally, then recreate it the next time CI ran - a fixed,
+  # explicit value avoids both problems.
+  #
   # De-duplicated: the human operator and the Terraform service principal may be the same
   # principal in some setups, so this is passed through toset() downstream.
   keyvault_officer_principal_ids = [
     var.current_user_object_id,
-    data.azuread_service_principal.terraform_sp.object_id,
+    var.terraform_sp_object_id,
   ]
 }
 
@@ -240,10 +237,10 @@ module "runner" {
   runner_ssh_public_key = var.runner_ssh_public_key
 }
 
-module "oidc" {
-  source = "./modules/oidc"
-
-  github_org          = var.github_org
-  github_repo         = var.github_repo
-  terraform_client_id = var.client_id
-}
+# GitHub Actions OIDC federated credentials (inframonitor-github-actions-main/-pr) are managed
+# manually via az cli, not by Terraform - the SP running Terraform doesn't have Graph API
+# permissions to read/write its own app registration (confirmed via 403 on data.azuread_*
+# lookups), and granting those permissions requires a higher-privileged Azure AD role than this
+# project otherwise needs. See .github/workflows/README.md for the az ad app federated-credential
+# commands. They already exist in Azure (untouched by this change) - only Terraform's tracking of
+# them was removed.
