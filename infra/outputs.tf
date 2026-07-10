@@ -111,6 +111,11 @@ output "apim_gateway_url" {
   value = var.create_apim ? module.apim[0].gateway_url : null
 }
 
+output "apim_subscription_key" {
+  value     = var.create_apim ? module.apim[0].apim_subscription_key : null
+  sensitive = true
+}
+
 # --- Front Door (only present when create_frontdoor = true and create_apim = true) ---
 
 output "frontdoor_endpoint_url" {

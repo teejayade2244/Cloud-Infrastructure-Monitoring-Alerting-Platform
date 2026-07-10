@@ -17,3 +17,13 @@ output "incidents_app_id" {
 output "incidents_app_fqdn" {
   value = azurerm_container_app.incidents.latest_revision_fqdn
 }
+
+# Aliases of events_app_fqdn / incidents_app_fqdn above - the apim module consumes these
+# specific names when building each backend's service URL.
+output "events_service_fqdn" {
+  value = azurerm_container_app.events.latest_revision_fqdn
+}
+
+output "incidents_service_fqdn" {
+  value = azurerm_container_app.incidents.latest_revision_fqdn
+}

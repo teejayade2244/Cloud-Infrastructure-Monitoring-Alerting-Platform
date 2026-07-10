@@ -21,3 +21,8 @@ output "apim_name" {
 output "apim_principal_id" {
   value = azurerm_api_management.main.identity[0].principal_id
 }
+
+output "apim_subscription_key" {
+  value     = azurerm_api_management_subscription.main.primary_key
+  sensitive = true
+}

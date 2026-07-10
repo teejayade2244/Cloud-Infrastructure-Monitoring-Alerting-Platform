@@ -207,6 +207,10 @@ module "apim" {
 
   publisher_name  = "InfraMonitor"
   publisher_email = local.publisher_email
+
+  events_service_url    = "https://${module.container_apps.events_service_fqdn}"
+  incidents_service_url = "https://${module.container_apps.incidents_service_fqdn}"
+  frontend_url          = "https://${module.frontend.static_web_app_hostname}"
 }
 
 module "logic_app" {
