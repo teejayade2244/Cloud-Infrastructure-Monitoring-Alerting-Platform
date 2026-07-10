@@ -18,6 +18,7 @@ resource "azurerm_cdn_frontdoor_origin_group" "frontend" {
   health_probe {
     path                = "/"
     protocol            = "Https"
+    request_type        = "GET"
     interval_in_seconds = 100
   }
 
@@ -47,6 +48,7 @@ resource "azurerm_cdn_frontdoor_origin" "frontend" {
   name                          = "frontend-origin"
   cdn_frontdoor_origin_group_id = azurerm_cdn_frontdoor_origin_group.frontend.id
 
+  enabled                        = true
   host_name                      = var.static_web_app_hostname
   certificate_name_check_enabled = true
   http_port                      = 80
@@ -59,6 +61,7 @@ resource "azurerm_cdn_frontdoor_origin" "api" {
   name                          = "api-origin"
   cdn_frontdoor_origin_group_id = azurerm_cdn_frontdoor_origin_group.api.id
 
+  enabled                        = true
   host_name                      = var.apim_gateway_hostname
   certificate_name_check_enabled = true
   http_port                      = 80
@@ -74,7 +77,8 @@ resource "azurerm_cdn_frontdoor_route" "frontend" {
   cdn_frontdoor_origin_ids      = [azurerm_cdn_frontdoor_origin.frontend.id]
 
   patterns_to_match      = ["/*"]
-  supported_protocols    = ["Https"]
+  supported_protocols    = ["Http", "Https"]
+  https_redirect_enabled = true
   forwarding_protocol    = "HttpsOnly"
   link_to_default_domain = true
   # No cache block - its mere presence enables caching, so omitting it is how caching is
@@ -88,7 +92,8 @@ resource "azurerm_cdn_frontdoor_route" "api" {
   cdn_frontdoor_origin_ids      = [azurerm_cdn_frontdoor_origin.api.id]
 
   patterns_to_match      = ["/api/*"]
-  supported_protocols    = ["Https"]
+  supported_protocols    = ["Http", "Https"]
+  https_redirect_enabled = true
   forwarding_protocol    = "HttpsOnly"
   link_to_default_domain = true
 }
