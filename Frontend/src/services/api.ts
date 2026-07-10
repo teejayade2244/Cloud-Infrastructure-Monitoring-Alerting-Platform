@@ -8,6 +8,7 @@ const headers = {
     "Content-Type": "application/json",
 }
 
+
 export const eventsApi = {
     getAll: async (params?: {
         environment?: string
