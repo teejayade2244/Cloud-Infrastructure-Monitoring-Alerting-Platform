@@ -1,6 +1,6 @@
 import axios from "axios"
 
-const APIM_BASE = "https://inframonitor-apim.azure-api.net"
+const APIM_BASE = "https://inframonitor-apim-dev.azure-api.net"
 const API_KEY = import.meta.env.VITE_APIM_KEY
 
 const headers = {
