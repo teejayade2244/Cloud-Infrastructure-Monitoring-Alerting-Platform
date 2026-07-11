@@ -1,6 +1,6 @@
 import axios from "axios"
 
-const APIM_BASE = "https://inframonitor-dev-gbhzdzb9fyaqbnc9.z01.azurefd.net/api"
+const APIM_BASE = import.meta.env.VITE_APIM_BASE
 const API_KEY = import.meta.env.VITE_APIM_KEY
 
 const headers = {
