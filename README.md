@@ -24,6 +24,8 @@ by an auditable record of everything that happened.
 alternative to point-and-click monitoring SaaS for tracking infrastructure incidents, without giving
 up ownership of the data or the pipeline.
 
+![InfraMonitor dashboard](docs/dashboard.png)
+
 ## Architecture
 
 ![InfraMonitor architecture](docs/architecture.jpg)
