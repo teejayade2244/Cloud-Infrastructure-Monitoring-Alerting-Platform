@@ -26,72 +26,14 @@ up ownership of the data or the pipeline.
 
 ## Architecture
 
-```
-                                   ┌─────────────────────────┐
-                                   │        Browser           │
-                                   └────────────┬─────────────┘
-                                                │ HTTPS
-                                                ▼
-                                   ┌─────────────────────────┐
-                                   │   Azure Front Door       │  edge TLS, routing,
-                                   │   (Standard)             │  /api origin-path rewrite
-                                   └───────┬──────────┬───────┘
-                                          │          │
-                              /api/*     │          │  /* (static assets)
-                                          ▼          ▼
-                          ┌───────────────────┐   ┌──────────────────────┐
-                          │  API Management   │   │  Static Web App       │
-                          │  (subscription    │   │  (React dashboard)    │
-                          │   key, CORS,      │   └──────────────────────┘
-                          │   rate limiting)  │
-                          └─────────┬─────────┘
-                                    │ managed identity, HTTPS
-                     ┌──────────────┴───────────────┐
-                     ▼                               ▼
-          ┌─────────────────────┐         ┌───────────────────────┐
-          │  events-service     │         │  incidents-service     │
-          │  (Node.js, Container │         │  (.NET, Container      │
-          │   Apps)              │         │   Apps)                │
-          └──────────┬───────────┘         └───────────┬────────────┘
-                     │ writes                            │ reads / writes
-                     ▼                                    ▼
-          ┌─────────────────────────────────────────────────────────┐
-          │                      Cosmos DB                            │
-          │        (Events · Incidents · Notifications containers)    │
-          └─────────────────────────────────────────────────────────┘
-                     │
-                     │ critical/high severity event
-                     ▼
-          ┌─────────────────────┐
-          │   Service Bus Topic  │
-          │ "infrastructure-     │
-          │   events"            │
-          └──────────┬───────────┘
-              ┌──────┴───────┐
-              ▼              ▼
-   ┌─────────────────────┐  ┌───────────────────────┐
-   │ create-incident      │  │ logic-app-notifications│
-   │ subscription          │  │ subscription           │
-   └──────────┬────────────┘  └───────────┬────────────┘
-              ▼                            ▼
-   ┌─────────────────────┐      ┌───────────────────────┐
-   │ Container Apps Job   │      │ Logic App              │
-   │ (KEDA-scaled off     │      │ → sends email          │
-   │  queue depth)        │      │ → records notification │
-   │ → creates incident   │      │   in Cosmos DB          │
-   │   in Cosmos DB        │      └───────────────────────┘
-   └─────────────────────┘
+![InfraMonitor architecture](docs/architecture.jpg)
 
-─────────────────────────────────────────────────────────────────────────
-
-                    CI/CD (separate from the request path above)
-
-  GitHub Actions ──▶ Self-hosted Runner (VM inside VNet) ──▶ Terraform ──▶ Azure
-     (infra/** changes, OIDC login, plans on PR, applies on main)
-
-  GitHub Actions ──▶ hosted runner ──▶ npm build (Vite) ──▶ Azure Static Web Apps
-     (Frontend/** changes, direct deploy, no Terraform involved)
-```
+All Azure resources shown above are provisioned via Terraform. The request path runs
+Browser → Front Door → (APIM → Container Apps → Cosmos DB) or (Static Web App), with critical
+events fanning out from Service Bus to the Container Apps incident-creation job and the Logic App
+independently. CI/CD is separate from that path: GitHub Actions drives Terraform through the
+self-hosted runner inside the VNet, and drives the frontend build/deploy on a standard hosted
+runner - see [CI/CD pipeline explanation](#cicd-pipeline-explanation) below for both.
 
 ## Tech stack
 
