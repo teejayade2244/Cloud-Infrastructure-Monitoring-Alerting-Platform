@@ -1,6 +1,10 @@
 import axios from "axios"
 
-const APIM_BASE = import.meta.env.VITE_APIM_BASE
+
+// Relative "/api" works whenever the app is served from the Front Door domain (same origin,
+// no CORS) - the env var is only needed when serving the app from somewhere else, e.g. the
+// Static Web App's own URL or local dev against the deployed APIs.
+const APIM_BASE = import.meta.env.VITE_APIM_BASE || "/api"
 const API_KEY = import.meta.env.VITE_APIM_KEY
 
 const headers = {
