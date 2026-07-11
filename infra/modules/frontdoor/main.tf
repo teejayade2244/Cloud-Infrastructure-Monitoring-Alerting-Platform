@@ -48,8 +48,12 @@ resource "azurerm_cdn_frontdoor_origin" "frontend" {
   name                          = "frontend-origin"
   cdn_frontdoor_origin_group_id = azurerm_cdn_frontdoor_origin_group.frontend.id
 
-  enabled                        = true
-  host_name                      = var.static_web_app_hostname
+  enabled   = true
+  host_name = var.static_web_app_hostname
+  # Without this, AFD forwards its own client-facing hostname as the Host header instead of
+  # the origin's - Static Web Apps does host-based routing and returns its generic
+  # "Web Site not found" 404 for any Host it doesn't recognize.
+  origin_host_header             = var.static_web_app_hostname
   certificate_name_check_enabled = true
   http_port                      = 80
   https_port                     = 443
@@ -63,6 +67,7 @@ resource "azurerm_cdn_frontdoor_origin" "api" {
 
   enabled                        = true
   host_name                      = var.apim_gateway_hostname
+  origin_host_header             = var.apim_gateway_hostname
   certificate_name_check_enabled = true
   http_port                      = 80
   https_port                     = 443

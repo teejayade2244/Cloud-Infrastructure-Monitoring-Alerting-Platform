@@ -15,7 +15,17 @@ var cosmosEndpoint = builder.Configuration["COSMOS_ENDPOINT"]
     ?? Environment.GetEnvironmentVariable("COSMOS_ENDPOINT");
 // Cosmos DB
 // var cosmosEndpoint = Environment.GetEnvironmentVariable("COSMOS_ENDPOINT");
-var cosmosClient = new CosmosClient(cosmosEndpoint, credential);
+// Direct/RNTBD mode (the SDK default) connects straight to backend replicas over ports
+// 10250-10255, which the NSGs in this project don't open (only 443 is allowed outbound to
+// data-subnet). Gateway mode routes everything through the Cosmos DB gateway over HTTPS/443.
+var cosmosClient = new CosmosClient(
+    cosmosEndpoint,
+    credential,
+    new CosmosClientOptions
+    {
+        ConnectionMode = ConnectionMode.Gateway
+    }
+);
 builder.Services.AddSingleton(cosmosClient);
 
 // Register services
