@@ -42,3 +42,8 @@ variable "frontend_url" {
   description = "Static Web App URL allowed as a CORS origin on the published APIs"
   type        = string
 }
+
+variable "frontdoor_url" {
+  description = "Front Door endpoint URL allowed as a CORS origin on the published APIs"
+  type        = string
+}

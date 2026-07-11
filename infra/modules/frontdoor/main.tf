@@ -101,4 +101,12 @@ resource "azurerm_cdn_frontdoor_route" "api" {
   https_redirect_enabled = true
   forwarding_protocol    = "HttpsOnly"
   link_to_default_domain = true
+
+  # Strips the "/api" prefix before forwarding: with an origin path set, AFD forwards
+  # origin_path + the wildcard remainder of patterns_to_match, so /api/events-api/health
+  # reaches APIM as /events-api/health (APIM's operations have no /api prefix). A rule-set
+  # URL rewrite cannot do this: the rewrite engine only ever sees the path *after* the
+  # matched pattern, and AFD re-prepends the matched "/api" segment to whatever the rewrite
+  # produces - so origin_path is the only mechanism that removes it.
+  cdn_frontdoor_origin_path = "/"
 }

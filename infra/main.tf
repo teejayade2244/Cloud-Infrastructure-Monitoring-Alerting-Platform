@@ -211,6 +211,9 @@ module "apim" {
   events_service_url    = "https://${module.container_apps.events_service_fqdn}"
   incidents_service_url = "https://${module.container_apps.incidents_service_fqdn}"
   frontend_url          = "https://${module.frontend.static_web_app_hostname}"
+  # Empty when Front Door isn't created - an empty <origin> entry in the CORS policy never
+  # matches a real request, so this is a safe no-op rather than an invalid module reference.
+  frontdoor_url = var.create_frontdoor ? "https://${module.frontdoor[0].frontdoor_endpoint_hostname}" : ""
 }
 
 module "logic_app" {
@@ -236,9 +239,10 @@ module "frontend" {
   tags                = local.common_tags
 }
 
-# Depends on module.apim[0] existing, since api-origin needs a real gateway hostname - the
-# count expression ensures Front Door is only ever instantiated alongside APIM, so the
-# module.apim[0] reference below is never evaluated when APIM doesn't exist.
+# apim_gateway_hostname is built from APIM's own deterministic naming pattern
+# ("<name>.azure-api.net", no random suffix) rather than reading module.apim's output -
+# module.apim's CORS policy now needs frontdoor's hostname in return (see the apim module
+# block above), and depending on module.apim here too would create a dependency cycle.
 module "frontdoor" {
   count  = var.create_frontdoor && var.create_apim ? 1 : 0
   source = "./modules/frontdoor"
@@ -249,7 +253,7 @@ module "frontdoor" {
   tags                = local.common_tags
 
   static_web_app_hostname = module.frontend.static_web_app_hostname
-  apim_gateway_hostname   = replace(module.apim[0].apim_gateway_url, "https://", "")
+  apim_gateway_hostname   = "${local.project}-apim-${local.environment}.azure-api.net"
 }
 
 module "runner" {

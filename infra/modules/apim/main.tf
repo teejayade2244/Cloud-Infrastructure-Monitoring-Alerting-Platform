@@ -76,6 +76,7 @@ resource "azurerm_api_management_api_policy" "events" {
     <rate-limit calls="100" renewal-period="60" />
     <cors allow-credentials="false">
       <allowed-origins>
+        <origin>${var.frontdoor_url}</origin>
         <origin>${var.frontend_url}</origin>
         <origin>http://localhost:5173</origin>
       </allowed-origins>
@@ -213,6 +214,7 @@ resource "azurerm_api_management_api_policy" "incidents" {
     <rate-limit calls="100" renewal-period="60" />
     <cors allow-credentials="false">
       <allowed-origins>
+        <origin>${var.frontdoor_url}</origin>
         <origin>${var.frontend_url}</origin>
         <origin>http://localhost:5173</origin>
       </allowed-origins>
