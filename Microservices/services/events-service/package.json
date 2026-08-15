@@ -25,6 +25,10 @@
         "prettier": "^3.9.6",
         "supertest": "^7.2.2"
     },
+    "overrides": {
+        "fast-xml-parser": "^5.10.1",
+        "@opentelemetry/propagator-jaeger": "^2.9.0"
+    },
     "jest": {
         "testEnvironment": "node",
         "collectCoverageFrom": [
