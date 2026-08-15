@@ -151,6 +151,51 @@ jobs:
           path: ${{ env.WORKING_DIR }}/events-service-image.tar
           retention-days: 3
 
+  integration-tests:
+    name: Integration Tests (real Cosmos DB + Service Bus)
+    needs: build
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    defaults:
+      run:
+        working-directory: ${{ env.WORKING_DIR }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: ${{ env.WORKING_DIR }}/package-lock.json
+
+      - run: npm ci
+
+      # events-service-ci-identity - a dedicated CI-only identity, federated to this repo (main
+      # + pull_request) via OIDC, with RBAC scoped only to the test database/topic below - never
+      # the app's own production identity or production data.
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_EVENTS_CI }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - run: npm run test:integration
+        env:
+          # Non-sensitive resource pointers, sourced from repo Variables rather than hardcoded
+          # here - same Cosmos account as production (only the database name differs), so
+          # COSMOS_ENDPOINT is the real production endpoint, not a separate test account.
+          COSMOS_ENDPOINT: ${{ vars.COSMOS_ENDPOINT }}
+          COSMOS_TEST_DATABASE: ${{ vars.COSMOS_TEST_DATABASE }}
+          SERVICEBUS_NAMESPACE: ${{ vars.SERVICEBUS_NAMESPACE }}
+          SERVICEBUS_TEST_TOPIC: ${{ vars.SERVICEBUS_TEST_TOPIC }}
+          SERVICEBUS_TEST_SUBSCRIPTION: ${{ vars.SERVICEBUS_TEST_SUBSCRIPTION }}
+          # The CI-only identity above, not the app's own managed identity - DefaultAzureCredential
+          # picks this up via the same pattern azureConfig.js already uses.
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID_EVENTS_CI }}
+
   container-scan:
     name: Container Vulnerability Scan
     needs: build
