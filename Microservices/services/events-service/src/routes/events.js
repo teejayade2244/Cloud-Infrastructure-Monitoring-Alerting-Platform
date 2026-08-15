@@ -7,6 +7,11 @@ const router = express.Router()
 
 const { eventsContainer, serviceBusClient } = createAzureClients(process.env)
 
+// Defaults to the production topic name - only the integration-tests CI job ever sets
+// SERVICEBUS_TOPIC, pointed at the isolated test topic, so this is a no-op everywhere else.
+const serviceBusTopic =
+    process.env.SERVICEBUS_TOPIC?.trim() || "infrastructure-events"
+
 // POST /events - publish a new infrastructure event
 router.post("/", validateEvent, async (req, res) => {
     try {
@@ -31,9 +36,7 @@ router.post("/", validateEvent, async (req, res) => {
 
         // Publish to Service Bus for critical/high severity
         if (severity === "critical" || severity === "high") {
-            const sender = serviceBusClient.createSender(
-                "infrastructure-events",
-            )
+            const sender = serviceBusClient.createSender(serviceBusTopic)
             await sender.sendMessages({
                 body: event,
                 contentType: "application/json",

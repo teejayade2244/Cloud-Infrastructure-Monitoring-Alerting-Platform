@@ -13,27 +13,21 @@ const validateEvent = (req, res, next) => {
     const validSeverities = ["critical", "high", "medium", "low", "info"]
 
     if (!validTypes.includes(type)) {
-        return res
-            .status(400)
-            .json({
-                error: `Invalid type. Must be one of: ${validTypes.join(", ")}`,
-            })
+        return res.status(400).json({
+            error: `Invalid type. Must be one of: ${validTypes.join(", ")}`,
+        })
     }
 
     if (!validEnvironments.includes(environment)) {
-        return res
-            .status(400)
-            .json({
-                error: `Invalid environment. Must be one of: ${validEnvironments.join(", ")}`,
-            })
+        return res.status(400).json({
+            error: `Invalid environment. Must be one of: ${validEnvironments.join(", ")}`,
+        })
     }
 
     if (!validSeverities.includes(severity)) {
-        return res
-            .status(400)
-            .json({
-                error: `Invalid severity. Must be one of: ${validSeverities.join(", ")}`,
-            })
+        return res.status(400).json({
+            error: `Invalid severity. Must be one of: ${validSeverities.join(", ")}`,
+        })
     }
 
     next()
