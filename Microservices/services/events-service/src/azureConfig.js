@@ -1,12 +1,16 @@
 const { CosmosClient } = require("@azure/cosmos")
 const { ServiceBusClient } = require("@azure/service-bus")
-const { ClientSecretCredential, DefaultAzureCredential } = require("@azure/identity")
+const {
+    ClientSecretCredential,
+    DefaultAzureCredential,
+} = require("@azure/identity")
 
 function getAzureConfiguration(env = process.env) {
     const cosmosEndpoint = env.COSMOS_ENDPOINT?.trim() || ""
     const serviceBusNamespace = env.SERVICEBUS_NAMESPACE?.trim() || ""
     const cosmosConnectionString = env.COSMOS_CONNECTION_STRING?.trim() || ""
-    const serviceBusConnectionString = env.SERVICEBUS_CONNECTION_STRING?.trim() || ""
+    const serviceBusConnectionString =
+        env.SERVICEBUS_CONNECTION_STRING?.trim() || ""
     const clientId = env.AZURE_CLIENT_ID?.trim() || ""
     const tenantId = env.AZURE_TENANT_ID?.trim() || ""
     const clientSecret = env.AZURE_CLIENT_SECRET?.trim() || ""
@@ -68,9 +72,13 @@ function createAzureClients(env = process.env) {
 
     const serviceBusClient = config.serviceBusConnectionString
         ? new ServiceBusClient(config.serviceBusConnectionString)
-        : new ServiceBusClient(config.serviceBusNamespace, createCredential(env), {
-              transportType: "AmqpWebSockets",
-          })
+        : new ServiceBusClient(
+              config.serviceBusNamespace,
+              createCredential(env),
+              {
+                  transportType: "AmqpWebSockets",
+              },
+          )
 
     return {
         ...config,
