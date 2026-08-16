@@ -1,0 +1,86 @@
+# TEMPORARY, standalone verification workflow - not part of the real CI/CD pipeline. Exists
+# solely to answer one open question empirically: does events-service-smoke-test-identity
+# (authenticated via GitHub OIDC -> Azure AD federation) actually get recognized by this
+# Entra ID-integrated AKS cluster's Kubernetes RBAC as the "kind: User" + objectId subject
+# configured in inframonitor-gitops's smoke-test-reader-binding? See that chart's
+# templates/ci-rbac.yaml for the full context on why this wasn't verifiable without a real run.
+# Expected to be deleted or folded into the real smoke-test job once this is answered either way.
+name: TEST - smoke identity verification
+
+on:
+  workflow_dispatch: {}
+
+jobs:
+  test-smoke-identity:
+    name: Verify smoke-test identity RBAC
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      # events-service-smoke-test-identity - federated to this repo via GitHub OIDC. Not the
+      # same identity as events-service-ci-identity (integration tests) or
+      # events-service-cd-identity (ACR push) - purely for this RBAC verification.
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_EVENTS_SMOKE }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # az aks install-cli installs both kubectl and kubelogin (confirmed via its own command
+      # description: "Download and install kubectl... Download and install kubelogin, a
+      # client-go credential (exec) plugin implementing azure authentication.") - no separate
+      # kubelogin install step needed. sudo because it installs to a system path by default.
+      - name: Install kubectl + kubelogin
+        run: sudo az aks install-cli
+
+      - name: Get AKS credentials
+        run: az aks get-credentials --resource-group inframonitor-aks-rg --name inframonitor-aks --overwrite-existing
+
+      # workloadidentity mode, not msi: msi mode reads Azure's Instance Metadata Service
+      # (169.254.169.254), which only exists on actual Azure compute resources - a GitHub-hosted
+      # runner is not one, so msi would have no token source at all here. workloadidentity mode
+      # is what Microsoft's own kubelogin docs name explicitly for this exact scenario ("access
+      # Kubernetes clusters from CI/CD systems like GitHub... configure OIDC federation from
+      # GitHub"), and consumes the AZURE_CLIENT_ID/AZURE_TENANT_ID/AZURE_FEDERATED_TOKEN_FILE
+      # that azure/login@v2 already exports when using OIDC auth (no client-secret) - if this
+      # step fails specifically on a missing/empty federated token file, that assumption is what
+      # to check first.
+      - name: Convert kubeconfig for workload identity auth
+        run: kubelogin convert-kubeconfig -l workloadidentity
+
+      - name: Test RBAC access (real result, not worked around if it fails)
+        id: smoke_test
+        continue-on-error: true
+        run: |
+          echo "Running: kubectl get pods -n inframonitor"
+          kubectl get pods -n inframonitor 2>err.log
+          exit_code=$?
+          if [ "$exit_code" -eq 0 ]; then
+            echo "result=success" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=failure" >> "$GITHUB_OUTPUT"
+            echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
+          fi
+          cat err.log
+
+      - name: Report outcome
+        run: |
+          if [ "${{ steps.smoke_test.outputs.result }}" = "success" ]; then
+            echo "✅ SUCCESS: events-service-smoke-test-identity was recognized and authorized."
+            echo "The kind: User + objectId RoleBinding subject format is CONFIRMED CORRECT for a managed identity on this cluster."
+          else
+            echo "❌ FAILURE: kubectl get pods -n inframonitor did not succeed."
+            ERR=$(cat err.log || true)
+            echo "--- captured error ---"
+            echo "$ERR"
+            echo "-----------------------"
+            if echo "$ERR" | grep -qi "forbidden\|403"; then
+              echo "Diagnosis: 403/Forbidden - authentication SUCCEEDED (the cluster recognized the identity as some user), but that user is not authorized. This means the RoleBinding subject 'kind: User' + objectId either doesn't match what the cluster derived for this identity, or the RoleBinding/Role didn't propagate. Next step: inspect the exact 'User \"...\"' string in the error - that's what the cluster actually resolved this identity to, and it may not match ciSmokeTestPrincipalId verbatim."
+            elif echo "$ERR" | grep -qi "unauthorized\|401"; then
+              echo "Diagnosis: 401/Unauthorized - authentication itself failed, before RBAC was ever evaluated. This points at the kubelogin workloadidentity setup (federated token/env vars), not at the RoleBinding subject format question at all."
+            else
+              echo "Diagnosis: Neither 403 nor 401 detected in the error - likely a connectivity, DNS, or other infrastructure issue unrelated to identity/RBAC. See captured error above."
+            fi
+            exit 1
+          fi

@@ -7,6 +7,9 @@ on:
   pull_request:
     branches: [main]
     paths: ['Microservices/services/events-service/**']
+  # Doesn't affect push/pull_request path-filtering at all - purely additive, for the case a
+  # change touches only this workflow file and so wouldn't match either paths: filter above.
+  workflow_dispatch: {}
 
 # Restrictive default; the sast job overrides this to add security-events: write, which the
 # CodeQL analyze step needs regardless of the repo's default token permissions.
@@ -122,7 +125,7 @@ jobs:
 
       - uses: github/codeql-action/analyze@v3.37.7
 
-  build:
+  build-image:
     name: Docker Build
     needs: [lint-and-format, unit-tests]
     if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
@@ -139,11 +142,15 @@ jobs:
         id: vars
         run: echo "image_tag=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
-      - name: Build image (validation only, not pushed anywhere)
-        run: docker build --platform linux/amd64 -t events-service:${{ steps.vars.outputs.image_tag }} .
+      # Built exactly once, tagged with its final registry-qualified name so no re-tag is ever
+      # needed downstream. container-scan and push-image both load this same saved artifact
+      # rather than rebuilding, so what's scanned and what's eventually pushed are guaranteed
+      # byte-for-byte identical to each other and to what actually passed every check here.
+      - name: Build image
+        run: docker build --platform linux/amd64 -t inframonitoraksacr.azurecr.io/events-service:${{ steps.vars.outputs.image_tag }} .
 
-      - name: Save image for the container-scan job
-        run: docker save events-service:${{ steps.vars.outputs.image_tag }} -o events-service-image.tar
+      - name: Save image
+        run: docker save inframonitoraksacr.azurecr.io/events-service:${{ steps.vars.outputs.image_tag }} -o events-service-image.tar
 
       - uses: actions/upload-artifact@v4
         with:
@@ -153,7 +160,9 @@ jobs:
 
   integration-tests:
     name: Integration Tests (real Cosmos DB + Service Bus)
-    needs: build
+    # No needs: - runs npm run test:integration directly against Node.js and real Azure test
+    # resources (own checkout + npm ci below), with zero dependency on the Docker image
+    # existing. Previously depended on build for no functional reason.
     if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     permissions:
@@ -182,11 +191,11 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - run: npm run test:integration
+      # Piped through tee rather than run directly, so the output is both visible live in the
+      # Actions log and captured to a file for the artifact upload below - GitHub Actions' bash
+      # steps run with pipefail by default, so the step still fails correctly if the tests do.
+      - run: npm run test:integration 2>&1 | tee test-results.txt
         env:
-          # Non-sensitive resource pointers, sourced from repo Variables rather than hardcoded
-          # here - same Cosmos account as production (only the database name differs), so
-          # COSMOS_ENDPOINT is the real production endpoint, not a separate test account.
           COSMOS_ENDPOINT: ${{ vars.COSMOS_ENDPOINT }}
           COSMOS_TEST_DATABASE: ${{ vars.COSMOS_TEST_DATABASE }}
           SERVICEBUS_NAMESPACE: ${{ vars.SERVICEBUS_NAMESPACE }}
@@ -196,18 +205,31 @@ jobs:
           # picks this up via the same pattern azureConfig.js already uses.
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID_EVENTS_CI }}
 
+      - name: Upload integration test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-results
+          path: ${{ env.WORKING_DIR }}/test-results.txt
+          retention-days: 14
+
   container-scan:
     name: Container Vulnerability Scan
-    needs: build
+    needs: build-image
     if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
+    # Forwards build-image's tag so push-image can read it without needing build-image directly
+    # in its own needs: list (push-image already depends on this job, which already depends on
+    # build-image, so nothing about execution order changes - this only exposes the value).
+    outputs:
+      image_tag: ${{ needs.build-image.outputs.image_tag }}
     defaults:
       run:
         working-directory: ${{ env.WORKING_DIR }}
     steps:
-      # Loading the exact image artifact the build job produced, rather than rebuilding, so
-      # what's scanned is guaranteed to be byte-for-byte what build actually produced - not a
-      # separately-built image that merely should be identical.
+      # Loading the exact image artifact build-image produced, rather than rebuilding, so
+      # what's scanned is guaranteed to be byte-for-byte what build-image actually produced -
+      # not a separately-built image that merely should be identical.
       - uses: actions/download-artifact@v4
         with:
           name: docker-image
@@ -218,7 +240,7 @@ jobs:
       - name: Run Trivy vulnerability scan
         uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
         with:
-          image-ref: events-service:${{ needs.build.outputs.image_tag }}
+          image-ref: inframonitoraksacr.azurecr.io/events-service:${{ needs.build-image.outputs.image_tag }}
           format: table
           output: ${{ env.WORKING_DIR }}/trivy-results.txt
           severity: CRITICAL,HIGH
@@ -243,7 +265,7 @@ jobs:
         uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
         with:
           scan-type: image
-          image-ref: events-service:${{ needs.build.outputs.image_tag }}
+          image-ref: inframonitoraksacr.azurecr.io/events-service:${{ needs.build-image.outputs.image_tag }}
           format: cyclonedx
           output: ${{ env.WORKING_DIR }}/sbom.cyclonedx.json
 
@@ -254,3 +276,70 @@ jobs:
           name: sbom-cyclonedx
           path: ${{ env.WORKING_DIR }}/sbom.cyclonedx.json
           retention-days: 90
+
+  push-image:
+    name: Push Image to ACR (staging)
+    needs: [container-scan, integration-tests]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ needs.container-scan.outputs.image_tag }}
+    permissions:
+      id-token: write
+      contents: read
+    defaults:
+      run:
+        working-directory: ${{ env.WORKING_DIR }}
+    steps:
+      # Third and final reuse of the single image build-image produced - still not a rebuild.
+      - uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+          path: ${{ env.WORKING_DIR }}
+
+      - run: docker load -i events-service-image.tar
+
+      # events-service-cd-identity - dedicated to this job, distinct from
+      # events-service-ci-identity (used by integration-tests above), which is deliberately
+      # scoped only to test Cosmos/Service Bus resources and has no ACR role at all. This
+      # identity has AcrPush on inframonitoraksacr and is federated for this repo's
+      # push-to-main subject only.
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_EVENTS_CD }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Login to ACR
+        run: az acr login --name inframonitoraksacr
+
+      - name: Push image
+        run: docker push inframonitoraksacr.azurecr.io/events-service:${{ needs.container-scan.outputs.image_tag }}
+
+  update-staging-values:
+    name: Update staging image tag (inframonitor-gitops)
+    needs: push-image
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: teejayade2244/inframonitor-gitops
+          token: ${{ secrets.GITOPS_PAT }}
+
+      - name: Install yq
+        run: |
+          curl -sL -o /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_amd64
+          chmod +x /usr/local/bin/yq
+      - name: Set staging image tag
+        run: yq -i '.image.tag = "${{ needs.push-image.outputs.image_tag }}"' charts/events-service/values-staging.yaml
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add charts/events-service/values-staging.yaml
+          git commit -m "deploy(staging): events-service to ${{ needs.push-image.outputs.image_tag }}
+
+          Source: teejayade2244/Cloud-Infrastructure-Monitoring-Alerting-Platform@${{ github.sha }}"
+          git push
