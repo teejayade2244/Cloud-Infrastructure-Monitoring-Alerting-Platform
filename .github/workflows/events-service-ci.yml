@@ -142,10 +142,6 @@ jobs:
         id: vars
         run: echo "image_tag=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
-      # Built exactly once, tagged with its final registry-qualified name so no re-tag is ever
-      # needed downstream. container-scan and push-image both load this same saved artifact
-      # rather than rebuilding, so what's scanned and what's eventually pushed are guaranteed
-      # byte-for-byte identical to each other and to what actually passed every check here.
       - name: Build image
         run: docker build --platform linux/amd64 -t inframonitoraksacr.azurecr.io/events-service:${{ steps.vars.outputs.image_tag }} .
 
@@ -160,9 +156,6 @@ jobs:
 
   integration-tests:
     name: Integration Tests (real Cosmos DB + Service Bus)
-    # No needs: - runs npm run test:integration directly against Node.js and real Azure test
-    # resources (own checkout + npm ci below), with zero dependency on the Docker image
-    # existing. Previously depended on build for no functional reason.
     if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     permissions:
@@ -182,18 +175,12 @@ jobs:
 
       - run: npm ci
 
-      # events-service-ci-identity - a dedicated CI-only identity, federated to this repo (main
-      # + pull_request) via OIDC, with RBAC scoped only to the test database/topic below - never
-      # the app's own production identity or production data.
       - uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID_EVENTS_CI }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      # Piped through tee rather than run directly, so the output is both visible live in the
-      # Actions log and captured to a file for the artifact upload below - GitHub Actions' bash
-      # steps run with pipefail by default, so the step still fails correctly if the tests do.
       - run: npm run test:integration 2>&1 | tee test-results.txt
         env:
           COSMOS_ENDPOINT: ${{ vars.COSMOS_ENDPOINT }}
@@ -201,8 +188,6 @@ jobs:
           SERVICEBUS_NAMESPACE: ${{ vars.SERVICEBUS_NAMESPACE }}
           SERVICEBUS_TEST_TOPIC: ${{ vars.SERVICEBUS_TEST_TOPIC }}
           SERVICEBUS_TEST_SUBSCRIPTION: ${{ vars.SERVICEBUS_TEST_SUBSCRIPTION }}
-          # The CI-only identity above, not the app's own managed identity - DefaultAzureCredential
-          # picks this up via the same pattern azureConfig.js already uses.
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID_EVENTS_CI }}
 
       - name: Upload integration test results
@@ -218,18 +203,12 @@ jobs:
     needs: build-image
     if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
-    # Forwards build-image's tag so push-image can read it without needing build-image directly
-    # in its own needs: list (push-image already depends on this job, which already depends on
-    # build-image, so nothing about execution order changes - this only exposes the value).
     outputs:
       image_tag: ${{ needs.build-image.outputs.image_tag }}
     defaults:
       run:
         working-directory: ${{ env.WORKING_DIR }}
     steps:
-      # Loading the exact image artifact build-image produced, rather than rebuilding, so
-      # what's scanned is guaranteed to be byte-for-byte what build-image actually produced -
-      # not a separately-built image that merely should be identical.
       - uses: actions/download-artifact@v4
         with:
           name: docker-image
@@ -255,12 +234,6 @@ jobs:
           path: ${{ env.WORKING_DIR }}/trivy-results.txt
           retention-days: 14
 
-      # SBOM reflects the FINAL, BUILT image - base OS packages plus the fully resolved
-      # dependency tree as actually shipped - not just package-lock.json, which is why this
-      # runs against image-ref here rather than in dependency-scan's filesystem-mode scan.
-      # A CycloneDX SBOM is a component inventory, not a vulnerability report, so
-      # severity/ignore-unfixed/exit-code don't apply and are deliberately omitted - this step
-      # always succeeds and never gates the pipeline, purely archival.
       - name: Generate SBOM (CycloneDX)
         uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
         with:
@@ -299,11 +272,6 @@ jobs:
 
       - run: docker load -i events-service-image.tar
 
-      # events-service-cd-identity - dedicated to this job, distinct from
-      # events-service-ci-identity (used by integration-tests above), which is deliberately
-      # scoped only to test Cosmos/Service Bus resources and has no ACR role at all. This
-      # identity has AcrPush on inframonitoraksacr and is federated for this repo's
-      # push-to-main subject only.
       - uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID_EVENTS_CD }}
@@ -321,6 +289,8 @@ jobs:
     needs: push-image
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ needs.push-image.outputs.image_tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -343,3 +313,35 @@ jobs:
 
           Source: teejayade2244/Cloud-Infrastructure-Monitoring-Alerting-Platform@${{ github.sha }}"
           git push
+
+  smoke-test-staging:
+    name: Smoke Test (staging)
+    needs: update-staging-values
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_EVENTS_SMOKE }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Install kubectl + kubelogin
+        run: sudo az aks install-cli
+
+      - name: Get AKS credentials
+        run: az aks get-credentials --resource-group inframonitor-aks-rg --name inframonitor-aks --overwrite-existing
+
+      - name: Convert kubeconfig for azurecli auth
+        run: kubelogin convert-kubeconfig -l azurecli
+
+      - name: Run staging smoke test
+        id: smoke_test
+        env:
+          EXPECTED_TAG: ${{ needs.update-staging-values.outputs.image_tag }}
+        run: scripts/smoke-test-staging.sh

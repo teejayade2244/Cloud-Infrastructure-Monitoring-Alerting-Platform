@@ -4,6 +4,7 @@ const eventsRouter = require("./routes/events")
 const app = express()
 app.use(express.json())
 
+// Used by the CI smoke-test job to verify the staging deployment is up.
 app.get("/health", (req, res) => {
     res.json({
         status: "healthy",
