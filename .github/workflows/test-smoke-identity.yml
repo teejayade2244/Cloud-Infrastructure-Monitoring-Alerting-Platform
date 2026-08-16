@@ -37,17 +37,22 @@ jobs:
       - name: Get AKS credentials
         run: az aks get-credentials --resource-group inframonitor-aks-rg --name inframonitor-aks --overwrite-existing
 
-      # workloadidentity mode, not msi: msi mode reads Azure's Instance Metadata Service
-      # (169.254.169.254), which only exists on actual Azure compute resources - a GitHub-hosted
-      # runner is not one, so msi would have no token source at all here. workloadidentity mode
-      # is what Microsoft's own kubelogin docs name explicitly for this exact scenario ("access
-      # Kubernetes clusters from CI/CD systems like GitHub... configure OIDC federation from
-      # GitHub"), and consumes the AZURE_CLIENT_ID/AZURE_TENANT_ID/AZURE_FEDERATED_TOKEN_FILE
-      # that azure/login@v2 already exports when using OIDC auth (no client-secret) - if this
-      # step fails specifically on a missing/empty federated token file, that assumption is what
-      # to check first.
-      - name: Convert kubeconfig for workload identity auth
-        run: kubelogin convert-kubeconfig -l workloadidentity
+      # CORRECTED after a real run failed with "failed to create azidentity credential: client ID
+      # cannot be empty". Root cause, confirmed by reading azure/login@v2's actual source
+      # (main.ts / LoginConfig.ts / AzureCliLogin.ts on the Azure/login repo): the action fetches
+      # a GitHub OIDC token via core.getIDToken() and uses it ONLY internally, for its own `az
+      # login` call. It does not export AZURE_CLIENT_ID/AZURE_TENANT_ID/AZURE_FEDERATED_TOKEN_FILE/
+      # AZURE_AUTHORITY_HOST as env vars for later steps - grepped both files for those names and
+      # for exportVariable, zero matches. So workloadidentity mode (which needs those env vars
+      # itself, independently of azure/login) had nothing to read.
+      # azurecli mode is the correct fit instead: azure/login@v2 DOES fully authenticate the `az`
+      # CLI session in this job (that's its whole job), so kubelogin -l azurecli piggybacks on
+      # that already-logged-in session (via `az account get-access-token`) rather than needing its
+      # own separate federated-token setup. The resulting token is for the same identity either
+      # way - this only changes how the token is obtained, not which principal it represents - so
+      # it doesn't affect the original RBAC subject-format question this workflow exists to test.
+      - name: Convert kubeconfig for azurecli auth
+        run: kubelogin convert-kubeconfig -l azurecli
 
       - name: Test RBAC access (real result, not worked around if it fails)
         id: smoke_test
@@ -78,7 +83,7 @@ jobs:
             if echo "$ERR" | grep -qi "forbidden\|403"; then
               echo "Diagnosis: 403/Forbidden - authentication SUCCEEDED (the cluster recognized the identity as some user), but that user is not authorized. This means the RoleBinding subject 'kind: User' + objectId either doesn't match what the cluster derived for this identity, or the RoleBinding/Role didn't propagate. Next step: inspect the exact 'User \"...\"' string in the error - that's what the cluster actually resolved this identity to, and it may not match ciSmokeTestPrincipalId verbatim."
             elif echo "$ERR" | grep -qi "unauthorized\|401"; then
-              echo "Diagnosis: 401/Unauthorized - authentication itself failed, before RBAC was ever evaluated. This points at the kubelogin workloadidentity setup (federated token/env vars), not at the RoleBinding subject format question at all."
+              echo "Diagnosis: 401/Unauthorized - authentication itself failed, before RBAC was ever evaluated. This points at the kubelogin azurecli setup (the az CLI session from azure/login@v2), not at the RoleBinding subject format question at all."
             else
               echo "Diagnosis: Neither 403 nor 401 detected in the error - likely a connectivity, DNS, or other infrastructure issue unrelated to identity/RBAC. See captured error above."
             fi
