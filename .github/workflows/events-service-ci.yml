@@ -7,6 +7,9 @@ on:
   pull_request:
     branches: [main]
     paths: ['Microservices/services/events-service/**']
+  # Doesn't affect push/pull_request path-filtering at all - purely additive, for the case a
+  # change touches only this workflow file and so wouldn't match either paths: filter above.
+  workflow_dispatch: {}
 
 # Restrictive default; the sast job overrides this to add security-events: write, which the
 # CodeQL analyze step needs regardless of the repo's default token permissions.
