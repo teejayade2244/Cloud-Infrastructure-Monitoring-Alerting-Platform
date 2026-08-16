@@ -182,11 +182,11 @@ jobs:
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
-      - run: npm run test:integration
+      # Piped through tee rather than run directly, so the output is both visible live in the
+      # Actions log and captured to a file for the artifact upload below - GitHub Actions' bash
+      # steps run with pipefail by default, so the step still fails correctly if the tests do.
+      - run: npm run test:integration 2>&1 | tee test-results.txt
         env:
-          # Non-sensitive resource pointers, sourced from repo Variables rather than hardcoded
-          # here - same Cosmos account as production (only the database name differs), so
-          # COSMOS_ENDPOINT is the real production endpoint, not a separate test account.
           COSMOS_ENDPOINT: ${{ vars.COSMOS_ENDPOINT }}
           COSMOS_TEST_DATABASE: ${{ vars.COSMOS_TEST_DATABASE }}
           SERVICEBUS_NAMESPACE: ${{ vars.SERVICEBUS_NAMESPACE }}
@@ -195,6 +195,14 @@ jobs:
           # The CI-only identity above, not the app's own managed identity - DefaultAzureCredential
           # picks this up via the same pattern azureConfig.js already uses.
           AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID_EVENTS_CI }}
+
+      - name: Upload integration test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-results
+          path: ${{ env.WORKING_DIR }}/test-results.txt
+          retention-days: 14
 
   container-scan:
     name: Container Vulnerability Scan
