@@ -1,9 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Expects EXPECTED_TAG in the environment (the image tag update-staging-values just pushed to
-# inframonitor-gitops) and a kubeconfig already authenticated against inframonitor-aks (azure/login
-# + kubelogin convert-kubeconfig -l azurecli, done by the calling workflow step before this runs).
+# Expects EXPECTED_TAG in the environment (the image tag the calling job just deployed) and a
+# kubeconfig already authenticated against inframonitor-aks (azure/login + kubelogin
+# convert-kubeconfig -l azurecli, done by the calling workflow step before this runs).
+#
+# Environment-agnostic by design - three optional inputs, each defaulting to staging's values so
+# existing callers (events-service-ci.yml's smoke-test-staging job) keep working unchanged:
+#   NAMESPACE          K8s namespace the pod/Deployment live in.
+#   ARGOCD_APP_NAME     The ArgoCD Application to force-refresh - a DIFFERENT resource per
+#                        environment (events-service-staging vs events-service-production), not
+#                        implied by NAMESPACE alone, so it's its own parameter rather than derived.
+#   ENVIRONMENT_LABEL   Written into the synthetic test event's own "environment" field. Staging
+#                        and production share one Cosmos account but use separate databases
+#                        (InfraMonitorDB vs InfraMonitorProdDB per the Helm values), so this only
+#                        affects the data written INTO whichever database the pod's own env vars
+#                        already point at - it doesn't route the write anywhere.
+NAMESPACE="${NAMESPACE:-inframonitor}"
+ARGOCD_APP_NAME="${ARGOCD_APP_NAME:-events-service-staging}"
+ENVIRONMENT_LABEL="${ENVIRONMENT_LABEL:-staging}"
 
 # Response bodies + a summary go here instead of /tmp, so the calling workflow step can upload
 # this whole directory as a build artifact (actions/upload-artifact, if: always()) - the evidence
@@ -45,6 +60,8 @@ cleanup() {
   # runner is gone.
   jq -n \
     --arg run_id "${GITHUB_RUN_ID:-manual}" \
+    --arg environment "$ENVIRONMENT_LABEL" \
+    --arg namespace "$NAMESPACE" \
     --arg image_tag "${EXPECTED_TAG:-}" \
     --arg pod_name "${READY_POD:-}" \
     --arg health_status "${HTTP_STATUS:-}" \
@@ -53,7 +70,7 @@ cleanup() {
     --arg delete_status "${DELETE_STATUS:-}" \
     --arg result "$([ "$exit_code" -eq 0 ] && echo success || echo failure)" \
     --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    '{run_id: $run_id, image_tag: $image_tag, pod_name: $pod_name, health_status: $health_status, event_id: $event_id, post_status: $post_status, delete_status: $delete_status, result: $result, timestamp: $timestamp}' \
+    '{run_id: $run_id, environment: $environment, namespace: $namespace, image_tag: $image_tag, pod_name: $pod_name, health_status: $health_status, event_id: $event_id, post_status: $post_status, delete_status: $delete_status, result: $result, timestamp: $timestamp}' \
     > "$EVIDENCE_DIR/summary.json" 2>/dev/null || true
   exit "$exit_code"
 }
@@ -62,11 +79,12 @@ trap cleanup EXIT
 # ArgoCD polls Git every ~3 minutes by default (confirmed: no timeout.reconciliation
 # override in argocd-cm on this cluster, no GitHub webhook on inframonitor-gitops), so
 # without this, the poll below would be racing that cycle rather than a fixed, known
-# latency. events-service-staging has automated sync + selfHeal, so forcing a hard refresh
-# is enough ArgoCD applies the diff itself once it detects one, no separate sync call
-# needed. Requires get+patch on this one named Application, granted via
-# inframonitor-gitops's inframonitor-namespace chart (ci-argocd-refresh-rbac.yaml).
-kubectl patch application events-service-staging -n argocd --type merge \
+# latency. The target Application has automated sync + selfHeal (confirmed for both
+# events-service-staging and events-service-production), so forcing a hard refresh is enough -
+# ArgoCD applies the diff itself once it detects one, no separate sync call needed. Requires
+# get+patch on this one named Application, granted via inframonitor-gitops's
+# inframonitor-namespace chart (ci-argocd-refresh-rbac.yaml).
+kubectl patch application "$ARGOCD_APP_NAME" -n argocd --type merge \
   -p '{"metadata":{"annotations":{"argocd.argoproj.io/refresh":"hard"}}}'
 
 # Refresh above makes this deterministic rather than a race against ArgoCD's poll cycle,
@@ -75,7 +93,7 @@ TIMEOUT=60
 INTERVAL=10
 ELAPSED=0
 while true; do
-  CURRENT_IMAGE=$(kubectl get deployment events-service -n inframonitor -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)
+  CURRENT_IMAGE=$(kubectl get deployment events-service -n "$NAMESPACE" -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || true)
   CURRENT_TAG="${CURRENT_IMAGE##*:}"
   echo "Elapsed ${ELAPSED}s: deployment image = ${CURRENT_IMAGE:-<none>}"
   if [ "$CURRENT_TAG" = "$EXPECTED_TAG" ]; then
@@ -83,7 +101,7 @@ while true; do
     break
   fi
   if [ "$ELAPSED" -ge "$TIMEOUT" ]; then
-    echo "::error::Timed out after ${TIMEOUT}s waiting for the events-service Deployment in namespace inframonitor to reference image tag ${EXPECTED_TAG} (last seen: ${CURRENT_TAG:-<none>}). ArgoCD may not have synced yet, or the sync failed - check the inframonitor-namespace/events-service-staging Application in ArgoCD."
+    echo "::error::Timed out after ${TIMEOUT}s waiting for the events-service Deployment in namespace ${NAMESPACE} to reference image tag ${EXPECTED_TAG} (last seen: ${CURRENT_TAG:-<none>}). ArgoCD may not have synced yet, or the sync failed - check the ${ARGOCD_APP_NAME} Application in ArgoCD."
     exit 1
   fi
   sleep "$INTERVAL"
@@ -102,7 +120,7 @@ while true; do
   # existing tolerance of a transient kubectl failure under the pipefail added above - without
   # it, pipefail would make a single kubectl hiccup abort the whole script instead of retrying
   # on the next iteration, same as it does today.
-  READY_POD=$(kubectl get pods -n inframonitor -l app=events-service \
+  READY_POD=$(kubectl get pods -n "$NAMESPACE" -l app=events-service \
     -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.containers[0].image}{" "}{.status.containerStatuses[0].ready}{"\n"}{end}' \
     | awk -v tag="$EXPECTED_TAG" '$2 ~ ":"tag"$" && $3=="true" {print $1; exit}' || true)
   if [ -n "$READY_POD" ]; then
@@ -110,7 +128,7 @@ while true; do
     break
   fi
   echo "Elapsed ${ELAPSED}s: no Ready pod yet running tag ${EXPECTED_TAG}"
-  kubectl get pods -n inframonitor -l app=events-service
+  kubectl get pods -n "$NAMESPACE" -l app=events-service
   if [ "$ELAPSED" -ge "$TIMEOUT" ]; then
     echo "::error::Timed out after ${TIMEOUT}s waiting for a Ready events-service pod running image tag ${EXPECTED_TAG}"
     exit 1
@@ -127,7 +145,7 @@ echo "pod_name=${READY_POD}" >> "$GITHUB_OUTPUT"
 # this can't accidentally hit a stale pod mid-rollout.
 POD="$READY_POD"
 
-kubectl port-forward -n inframonitor "pod/${POD}" 3000:3000 &
+kubectl port-forward -n "$NAMESPACE" "pod/${POD}" 3000:3000 &
 PF_PID=$!
 
 CONNECTED=false
@@ -154,9 +172,9 @@ echo "Process liveness confirmed: pod ${POD} (image tag ${EXPECTED_TAG}) answers
 
 # /health only proves the process is up, it has no dependencies on Cosmos DB or Workload
 # Identity (see app.js). This section proves the real chain: the pod's actual Workload Identity
-# authenticates to Azure AD and writes a real document into staging's real Cosmos DB
-# (InfraMonitorDB - not a test database, deliberately, since this is testing the real staging
-# path end to end).
+# authenticates to Azure AD and writes a real document into this environment's real Cosmos DB
+# (not a test database, deliberately, since this is testing the real deployment path end to end -
+# staging and production use separate databases on the same Cosmos account, see values-*.yaml).
 #
 # Schema per src/middleware/validate.js: type/environment/severity/
 # message/source are required. severity is deliberately "info", not "critical"/"high" those
@@ -164,13 +182,12 @@ echo "Process liveness confirmed: pod ${POD} (image tag ${EXPECTED_TAG}) answers
 # check and would leave a synthetic message in the real topic too. source carries the marker,
 # matching the same convention __tests__/integration/events.integration.test.js already uses to
 # keep synthetic data identifiable and sweepable.
-EVENT_ENVIRONMENT="staging"
 TEST_SOURCE="ci-smoke-test-${GITHUB_RUN_ID:-manual}"
 
 POST_STATUS=$(curl -s -o "$EVIDENCE_DIR/event-post-response.json" -w '%{http_code}' \
   -X POST http://localhost:3000/events \
   -H "Content-Type: application/json" \
-  -d "{\"type\":\"metric\",\"environment\":\"${EVENT_ENVIRONMENT}\",\"severity\":\"info\",\"message\":\"CI smoke test event - safe to ignore\",\"source\":\"${TEST_SOURCE}\"}")
+  -d "{\"type\":\"metric\",\"environment\":\"${ENVIRONMENT_LABEL}\",\"severity\":\"info\",\"message\":\"CI smoke test event - safe to ignore\",\"source\":\"${TEST_SOURCE}\"}")
 echo "POST /events -> HTTP ${POST_STATUS}"
 cat "$EVIDENCE_DIR/event-post-response.json"
 if [ "$POST_STATUS" != "201" ]; then
@@ -186,6 +203,6 @@ if [ -z "$EVENT_ID" ]; then
   echo "::error::POST /events returned HTTP 201 but no eventId in the response body - cannot confirm the write or clean it up"
   exit 1
 fi
-echo "Cosmos DB write confirmed: event ${EVENT_ID} (source=${TEST_SOURCE}) created in InfraMonitorDB via pod ${POD}'s Workload Identity."
+echo "Cosmos DB write confirmed: event ${EVENT_ID} (source=${TEST_SOURCE}) created via pod ${POD}'s Workload Identity."
 
-echo "Smoke test passed: pod ${POD} (image tag ${EXPECTED_TAG}) is healthy and can write to staging's Cosmos DB."
+echo "Smoke test passed: pod ${POD} (image tag ${EXPECTED_TAG}) is healthy and can write to ${ENVIRONMENT_LABEL}'s Cosmos DB."

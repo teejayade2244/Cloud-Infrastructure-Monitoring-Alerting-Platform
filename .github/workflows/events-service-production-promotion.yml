@@ -1,0 +1,112 @@
+name: events-service production promotion
+
+# Separate from events-service-ci.yml on purpose - production promotion is a deliberate, manual
+# act, never a side effect of a push or PR merge.
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: >-
+          Short SHA image tag to promote (must already be built, scanned, and smoke-tested in
+          staging)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  verify-staging-smoke-test:
+    name: Verify staging smoke test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Needed for scripts/verify-staging-smoke-test.sh's gh run list/view calls against this
+      # repo's own Actions history.
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify image tag has a successful staging smoke test
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: scripts/verify-staging-smoke-test.sh
+
+  promote-to-production:
+    name: Promote to production (inframonitor-gitops)
+    needs: verify-staging-smoke-test
+    environment: production
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      image_tag: ${{ inputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: teejayade2244/inframonitor-gitops
+          token: ${{ secrets.GITOPS_PAT }}
+
+      - name: Install yq
+        run: |
+          curl -sL -o /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_amd64
+          chmod +x /usr/local/bin/yq
+
+      - name: Set production image tag
+        run: yq -i '.image.tag = "${{ inputs.image_tag }}"' charts/events-service/values-production.yaml
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add charts/events-service/values-production.yaml
+          git commit -m "deploy(production): promote events-service to ${{ inputs.image_tag }}
+
+          PRODUCTION PROMOTION
+          Image tag: ${{ inputs.image_tag }}
+          Triggered by: @${{ github.actor }}
+          Verified via: Smoke Test (staging), events-service-ci.yml"
+          git push
+
+  smoke-test-production:
+    name: Smoke Test (production)
+    needs: promote-to-production
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID_EVENTS_SMOKE }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Install kubectl + kubelogin
+        run: sudo az aks install-cli
+
+      - name: Get AKS credentials
+        run: az aks get-credentials --resource-group inframonitor-aks-rg --name inframonitor-aks --overwrite-existing
+
+      - name: Convert kubeconfig for azurecli auth
+        run: kubelogin convert-kubeconfig -l azurecli
+
+      - name: Run production smoke test
+        id: smoke_test
+        env:
+          EXPECTED_TAG: ${{ needs.promote-to-production.outputs.image_tag }}
+          NAMESPACE: inframonitor-production
+          ARGOCD_APP_NAME: events-service-production
+          ENVIRONMENT_LABEL: production
+        run: scripts/smoke-test.sh
+
+      - name: Upload smoke test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-test-evidence-production
+          path: smoke-test-evidence/
+          retention-days: 14
