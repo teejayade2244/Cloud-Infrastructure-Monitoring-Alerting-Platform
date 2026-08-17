@@ -155,7 +155,7 @@ if [ "$CONNECTED" != "true" ]; then
   exit 1
 fi
 
-HTTP_STATUS=$(curl -s -o "$EVIDENCE_DIR/health-response.json" -w '%{http_code}' http://localhost:3000/health)
+HTTP_STATUS=$(curl -s -o "$EVIDENCE_DIR/health-response.json" -w '%{http_code}' http://localhost:3000/this-path-does-not-exist)
 echo "GET /health -> HTTP ${HTTP_STATUS}"
 cat "$EVIDENCE_DIR/health-response.json"
 if [ "$HTTP_STATUS" != "200" ]; then
