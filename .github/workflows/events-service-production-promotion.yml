@@ -1,7 +1,4 @@
 name: events-service production promotion
-
-# Separate from events-service-ci.yml on purpose - production promotion is a deliberate, manual
-# act, never a side effect of a push or PR merge.
 on:
   workflow_dispatch:
     inputs:
@@ -21,8 +18,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      # Needed for scripts/verify-staging-smoke-test.sh's gh run list/view calls against this
-      # repo's own Actions history.
       actions: read
     steps:
       - uses: actions/checkout@v4
@@ -76,6 +71,12 @@ jobs:
     permissions:
       id-token: write
       contents: read
+    # Forwards promote-to-production's tag so rollback-production can read it without needing
+    # that job directly in its own needs: list (rollback-production's needs is exactly
+    # smoke-test-production, since that's the job whose result gates it) - same pattern used for
+    # smoke-test-staging/rollback-staging in events-service-ci.yml.
+    outputs:
+      image_tag: ${{ needs.promote-to-production.outputs.image_tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -110,3 +111,83 @@ jobs:
           name: smoke-test-evidence-production
           path: smoke-test-evidence/
           retention-days: 14
+
+  rollback-production:
+    name: Rollback production (automatic)
+    needs: smoke-test-production
+    if: needs.smoke-test-production.result == 'failure'
+    runs-on: ubuntu-latest
+    # Deliberately NOT gated by environment: production (unlike promote-to-production).
+    # Reverting to an already-previously-verified-good state is lower risk than the forward
+    # promotion was - that's what the human gate was actually for. Waiting on approval here would
+    # just leave a known-broken production up for longer, which is the worse outcome.
+    permissions:
+      contents: read
+      # scripts/find-rollback-target.sh needs this to list/inspect past
+      # events-service-production-promotion.yml runs and jobs, and to read the
+      # smoke-test-evidence-production artifact, via gh.
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find rollback target
+        id: find_target
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WORKFLOW_FILE: events-service-production-promotion.yml
+          SMOKE_TEST_JOB_NAME: "Smoke Test (production)"
+          # Production runs are workflow_dispatch-triggered - there's no head_sha-to-tag
+          # correspondence the way staging has (confirmed empirically: GitHub's Actions API
+          # exposes no input-value field at all for a completed run). The
+          # smoke-test-evidence-production artifact that Smoke Test (production) already
+          # uploads is the only reliable record of which tag a given run actually tested, so the
+          # rollback target is read from there instead.
+          TAG_SOURCE: artifact
+          ARTIFACT_NAME: smoke-test-evidence-production
+          LOOKBACK_LIMIT: "10"
+        run: scripts/find-rollback-target.sh
+
+      - name: Checkout inframonitor-gitops
+        uses: actions/checkout@v4
+        with:
+          repository: teejayade2244/inframonitor-gitops
+          token: ${{ secrets.GITOPS_PAT }}
+          path: inframonitor-gitops
+
+      - name: Install yq
+        run: |
+          curl -sL -o /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_amd64
+          chmod +x /usr/local/bin/yq
+
+      - name: Set production image tag to rollback target
+        working-directory: inframonitor-gitops
+        run: yq -i '.image.tag = "${{ steps.find_target.outputs.rollback_tag }}"' charts/events-service/values-production.yaml
+
+      - name: Commit and push rollback
+        working-directory: inframonitor-gitops
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add charts/events-service/values-production.yaml
+          git commit -m "rollback(production): automatic rollback to ${{ steps.find_target.outputs.rollback_tag }}
+
+          AUTOMATIC ROLLBACK - triggered by a failed production smoke test
+          Rolled back FROM: ${{ needs.smoke-test-production.outputs.image_tag }}
+          Rolled back TO (last verified-good in production): ${{ steps.find_target.outputs.rollback_tag }}
+          Failed run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          git push
+
+      # No re-verification smoke test here on purpose (avoids recursive complexity for now, per
+      # design) - just a clear record of what happened. ArgoCD picks this commit up the same way
+      # it does every other change to this repo, no manual action needed.
+      - name: Report rollback
+        run: |
+          {
+            echo "## Automatic production rollback"
+            echo ""
+            echo "Smoke test failed for tag \`${{ needs.smoke-test-production.outputs.image_tag }}\`."
+            echo ""
+            echo "Rolled production back to tag \`${{ steps.find_target.outputs.rollback_tag }}\` - the most recent tag with a genuinely verified production smoke test (from run [${{ steps.find_target.outputs.rollback_run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ steps.find_target.outputs.rollback_run_id }})). Pushed to inframonitor-gitops."
+            echo ""
+            echo "ArgoCD will sync this automatically, same as any other change - no manual action needed."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -37,12 +37,6 @@ cleanup() {
   local exit_code=$?
   if [ -n "${EVENT_ID:-}" ]; then
     echo "Cleaning up smoke-test event ${EVENT_ID}..."
-    # Real DELETE /events/:id route (src/routes/events.js), called over the same port-forward
-    # already established below - not kubectl exec. Requires zero new K8s RBAC: no pods/exec
-    # grant, ci-rbac.yaml is untouched. Runs before the port-forward is killed further down, since
-    # it needs that tunnel still open. Cleanup failure is a warning, not a job failure: it doesn't
-    # invalidate what was actually verified above, and the event is clearly marked (source) for
-    # manual removal.
     DELETE_STATUS=$(curl -s -o "$EVIDENCE_DIR/event-delete-response.json" -w '%{http_code}' \
       -X DELETE "http://localhost:3000/events/${EVENT_ID}" 2>/dev/null || echo "000")
     if [ "$DELETE_STATUS" = "200" ]; then

@@ -322,6 +322,12 @@ jobs:
     permissions:
       id-token: write
       contents: read
+    # Forwards update-staging-values's tag so rollback-staging can read it without needing that
+    # job directly in its own needs: list (rollback-staging's needs is exactly smoke-test-staging,
+    # since that's the job whose result gates it) - same pattern container-scan already uses to
+    # forward build-image's output to push-image.
+    outputs:
+      image_tag: ${{ needs.update-staging-values.outputs.image_tag }}
     steps:
       - uses: actions/checkout@v4
 
@@ -344,7 +350,11 @@ jobs:
         id: smoke_test
         env:
           EXPECTED_TAG: ${{ needs.update-staging-values.outputs.image_tag }}
-        run: scripts/smoke-test-staging.sh
+          # scripts/smoke-test.sh is now environment-agnostic (shared with the production
+          # promotion workflow) - explicit here even though it matches the script's own default,
+          # so this job's behavior doesn't depend on a default staying unchanged elsewhere.
+          NAMESPACE: inframonitor
+        run: scripts/smoke-test.sh
 
       # if: always() - most useful on a FAILED run: the response bodies and summary.json (built
       # from whatever the script got through before it failed) are the actual debugging evidence,
@@ -356,3 +366,73 @@ jobs:
           name: smoke-test-evidence-staging
           path: smoke-test-evidence/
           retention-days: 14
+
+  rollback-staging:
+    name: Rollback staging (automatic)
+    needs: smoke-test-staging
+    if: needs.smoke-test-staging.result == 'failure'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # scripts/find-rollback-target.sh needs this to list/inspect past events-service-ci.yml
+      # runs and jobs via gh.
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find rollback target
+        id: find_target
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WORKFLOW_FILE: events-service-ci.yml
+          SMOKE_TEST_JOB_NAME: "Smoke Test (staging)"
+          # Staging runs are push-triggered, so a run's image tag is exactly its commit's short
+          # SHA - same correspondence verify-staging-smoke-test.sh already relies on.
+          TAG_SOURCE: head_sha
+          LOOKBACK_LIMIT: "10"
+        run: scripts/find-rollback-target.sh
+
+      - name: Checkout inframonitor-gitops
+        uses: actions/checkout@v4
+        with:
+          repository: teejayade2244/inframonitor-gitops
+          token: ${{ secrets.GITOPS_PAT }}
+          path: inframonitor-gitops
+
+      - name: Install yq
+        run: |
+          curl -sL -o /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_amd64
+          chmod +x /usr/local/bin/yq
+
+      - name: Set staging image tag to rollback target
+        working-directory: inframonitor-gitops
+        run: yq -i '.image.tag = "${{ steps.find_target.outputs.rollback_tag }}"' charts/events-service/values-staging.yaml
+
+      - name: Commit and push rollback
+        working-directory: inframonitor-gitops
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add charts/events-service/values-staging.yaml
+          git commit -m "rollback(staging): automatic rollback to ${{ steps.find_target.outputs.rollback_tag }}
+
+          AUTOMATIC ROLLBACK - triggered by a failed staging smoke test
+          Rolled back FROM: ${{ needs.smoke-test-staging.outputs.image_tag }}
+          Rolled back TO (last verified-good): ${{ steps.find_target.outputs.rollback_tag }}
+          Failed run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          git push
+
+      # No re-verification smoke test here on purpose (avoids recursive complexity for now, per
+      # design) - just a clear record of what happened. ArgoCD picks this commit up the same way
+      # it does every other change to this repo, no manual action needed.
+      - name: Report rollback
+        run: |
+          {
+            echo "## Automatic staging rollback"
+            echo ""
+            echo "Smoke test failed for tag \`${{ needs.smoke-test-staging.outputs.image_tag }}\`."
+            echo ""
+            echo "Rolled staging back to tag \`${{ steps.find_target.outputs.rollback_tag }}\` - the most recent tag with a genuinely verified staging smoke test (from run [${{ steps.find_target.outputs.rollback_run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ steps.find_target.outputs.rollback_run_id }})). Pushed to inframonitor-gitops."
+            echo ""
+            echo "ArgoCD will sync this automatically, same as any other change - no manual action needed."
+          } >> "$GITHUB_STEP_SUMMARY"

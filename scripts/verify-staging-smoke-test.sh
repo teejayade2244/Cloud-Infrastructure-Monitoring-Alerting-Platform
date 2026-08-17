@@ -9,22 +9,6 @@ set -euo pipefail
 # So finding "the run that built this tag" is exactly "the events-service-ci.yml run on main
 # whose headSha starts with this value" - no artifact inspection or tag-to-commit lookup needed,
 # the correspondence is already exact by construction.
-#
-# Confidence note: the specific risk here was whether a job that failed once and was later
-# re-run successfully (exactly what happened twice tonight, real precedent) would be missed by a
-# naive query. Verified empirically against that real history, not assumed: `gh run view <id>
-# --json jobs` (no filter param - this is the same as the REST API's default, undocumented as
-# the literal word "default" but confirmed via a live call to return only the latest attempt per
-# job) returned run_attempt 2 / conclusion "success" for a job whose FIRST attempt had failed -
-# the stale failure never appeared. So this script's core mechanism is verified against real
-# data, not just plausible in theory.
-#
-# What's NOT independently re-verified, and worth being explicit about: the --limit 100 lookback
-# window below. If more than 100 events-service-ci.yml runs on main have happened since the
-# target commit, this will report "not found" even though a real successful run exists further
-# back - a false negative (blocks a valid promotion), never a false positive (never approves an
-# unverified one). Given this repo's actual push cadence that's a generous window, but it's a
-# real, stated bound, not an unconditional guarantee.
 
 IMAGE_TAG="${IMAGE_TAG:?IMAGE_TAG must be set}"
 REPO="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY must be set}"
