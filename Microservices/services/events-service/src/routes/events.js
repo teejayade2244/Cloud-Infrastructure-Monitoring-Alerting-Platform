@@ -105,7 +105,8 @@ router.get("/:id", async (req, res) => {
     }
 })
 
-// DELETE /events/:id - delete a specific event
+// DELETE /events/:id - delete a specific event - also the cleanup step of the CI smoke test
+// (scripts/smoke-test.sh), removing the synthetic event its POST check creates.
 router.delete("/:id", async (req, res) => {
     try {
         // Same cross-partition lookup as GET /:id - Cosmos deletes require the partition key
