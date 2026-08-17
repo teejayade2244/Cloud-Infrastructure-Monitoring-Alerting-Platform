@@ -105,4 +105,30 @@ router.get("/:id", async (req, res) => {
     }
 })
 
+// DELETE /events/:id - delete a specific event
+router.delete("/:id", async (req, res) => {
+    try {
+        // Same cross-partition lookup as GET /:id - Cosmos deletes require the partition key
+        // (environment) up front, so the id-only route param isn't enough on its own.
+        const { resources } = await eventsContainer.items
+            .query(`SELECT * FROM c WHERE c.id = '${req.params.id}'`)
+            .fetchAll()
+
+        if (resources.length === 0) {
+            return res.status(404).json({ error: "Event not found" })
+        }
+
+        const { environment } = resources[0]
+        await eventsContainer.item(req.params.id, environment).delete()
+
+        res.status(200).json({
+            message: "Event deleted",
+            eventId: req.params.id,
+        })
+    } catch (err) {
+        console.error("Error deleting event:", err.message)
+        res.status(500).json({ error: "Failed to delete event" })
+    }
+})
+
 module.exports = router

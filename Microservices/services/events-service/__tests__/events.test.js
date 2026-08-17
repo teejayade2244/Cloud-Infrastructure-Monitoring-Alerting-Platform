@@ -26,11 +26,14 @@ delete process.env.AZURE_CLIENT_SECRET
 const mockItemsCreate = jest.fn()
 const mockFetchAll = jest.fn()
 const mockQuery = jest.fn(() => ({ fetchAll: mockFetchAll }))
+const mockItemDelete = jest.fn()
+const mockItem = jest.fn(() => ({ delete: mockItemDelete }))
 const mockContainer = {
     items: {
         create: mockItemsCreate,
         query: mockQuery,
     },
+    item: mockItem,
 }
 CosmosClient.mockImplementation(() => ({
     database: jest.fn(() => ({
@@ -79,6 +82,7 @@ describe("events router", () => {
         jest.clearAllMocks()
         mockItemsCreate.mockResolvedValue(undefined)
         mockFetchAll.mockResolvedValue({ resources: [] })
+        mockItemDelete.mockResolvedValue(undefined)
         mockSendMessages.mockResolvedValue(undefined)
         mockSenderClose.mockResolvedValue(undefined)
         consoleLogSpy = jest.spyOn(console, "log").mockImplementation(() => {})
@@ -359,6 +363,72 @@ describe("events router", () => {
             expect(res.body).toEqual({ error: "Failed to fetch event" })
             expect(consoleErrorSpy).toHaveBeenCalledWith(
                 "Error fetching event:",
+                "Cosmos is down",
+            )
+        })
+    })
+
+    describe("DELETE /events/:id", () => {
+        test("returns 200 and deletes using the event's own environment as partition key", async () => {
+            const event = {
+                id: "abc-123",
+                type: "alert",
+                environment: "staging",
+                severity: "high",
+            }
+            mockFetchAll.mockResolvedValueOnce({ resources: [event] })
+
+            const res = await request(app).delete("/events/abc-123")
+
+            expect(res.status).toBe(200)
+            expect(res.body).toEqual({
+                message: "Event deleted",
+                eventId: "abc-123",
+            })
+            expect(mockQuery).toHaveBeenCalledWith(
+                "SELECT * FROM c WHERE c.id = 'abc-123'",
+            )
+            expect(mockItem).toHaveBeenCalledWith("abc-123", "staging")
+            expect(mockItemDelete).toHaveBeenCalledTimes(1)
+        })
+
+        test("returns 404 and does not attempt a delete when the event does not exist", async () => {
+            mockFetchAll.mockResolvedValueOnce({ resources: [] })
+
+            const res = await request(app).delete("/events/does-not-exist")
+
+            expect(res.status).toBe(404)
+            expect(res.body).toEqual({ error: "Event not found" })
+            expect(mockItem).not.toHaveBeenCalled()
+            expect(mockItemDelete).not.toHaveBeenCalled()
+        })
+
+        test("returns 500 and logs the error when the lookup query throws", async () => {
+            mockFetchAll.mockRejectedValueOnce(new Error("Cosmos is down"))
+
+            const res = await request(app).delete("/events/abc-123")
+
+            expect(res.status).toBe(500)
+            expect(res.body).toEqual({ error: "Failed to delete event" })
+            expect(consoleErrorSpy).toHaveBeenCalledWith(
+                "Error deleting event:",
+                "Cosmos is down",
+            )
+            expect(mockItemDelete).not.toHaveBeenCalled()
+        })
+
+        test("returns 500 and logs the error when the delete itself throws", async () => {
+            mockFetchAll.mockResolvedValueOnce({
+                resources: [{ id: "abc-123", environment: "production" }],
+            })
+            mockItemDelete.mockRejectedValueOnce(new Error("Cosmos is down"))
+
+            const res = await request(app).delete("/events/abc-123")
+
+            expect(res.status).toBe(500)
+            expect(res.body).toEqual({ error: "Failed to delete event" })
+            expect(consoleErrorSpy).toHaveBeenCalledWith(
+                "Error deleting event:",
                 "Cosmos is down",
             )
         })
