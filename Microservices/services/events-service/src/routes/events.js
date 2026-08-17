@@ -58,7 +58,7 @@ router.post("/", validateEvent, async (req, res) => {
     }
 })
 
-// GET /events - list all events
+// GET /events - list all events, optionally filtered by environment/severity/type
 router.get("/", async (req, res) => {
     try {
         const { environment, severity, type } = req.query
