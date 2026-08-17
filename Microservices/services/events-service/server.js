@@ -15,6 +15,9 @@ const app = require("./src/app")
 
 const port = process.env.PORT || 3000
 
+// The App Insights + dotenv setup above runs before this, so there's a real window on startup
+// where the process has started but isn't listening yet - the Deployment's readinessProbe
+// (charts/events-service) exists specifically to keep Kubernetes from routing traffic during it.
 app.listen(port, () => {
     console.log(`Events Service running on port ${port}`)
 })
