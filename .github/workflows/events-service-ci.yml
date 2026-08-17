@@ -345,3 +345,14 @@ jobs:
         env:
           EXPECTED_TAG: ${{ needs.update-staging-values.outputs.image_tag }}
         run: scripts/smoke-test-staging.sh
+
+      # if: always() - most useful on a FAILED run: the response bodies and summary.json (built
+      # from whatever the script got through before it failed) are the actual debugging evidence,
+      # not just the pass/fail conclusion, and they'd otherwise disappear with the runner.
+      - name: Upload smoke test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-test-evidence-staging
+          path: smoke-test-evidence/
+          retention-days: 14
