@@ -4,7 +4,8 @@ const eventsRouter = require("./routes/events")
 const app = express()
 app.use(express.json())
 
-// Used by the CI smoke-test job to verify the staging deployment is up.
+// Used by the CI smoke-test job to verify the staging/production deployment is up - a failure
+// here (or on the write/cleanup checks in routes/events.js) triggers an automatic GitOps rollback.
 app.get("/health", (req, res) => {
     res.json({
         status: "healthy",
