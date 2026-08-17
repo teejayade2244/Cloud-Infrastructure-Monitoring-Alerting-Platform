@@ -87,7 +87,8 @@ router.get("/", async (req, res) => {
     }
 })
 
-// GET /events/:id - get a specific event
+// GET /events/:id - get a specific event (cross-partition lookup by id; the DELETE route below
+// reuses this same query shape to find an event's partition key before deleting it)
 router.get("/:id", async (req, res) => {
     try {
         const { resources } = await eventsContainer.items
