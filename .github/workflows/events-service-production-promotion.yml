@@ -115,17 +115,15 @@ jobs:
   rollback-production:
     name: Rollback production (automatic)
     needs: smoke-test-production
-    if: needs.smoke-test-production.result == 'failure'
+    # failure() is required here, not just the needs.*.result check alone: GitHub Actions
+    # silently ANDs an implicit success() onto any job's if: condition unless it already contains
+    # one of the status-check functions - confirmed the hard way, via a real deliberate-failure
+    # test on the staging equivalent of this job, where it stayed 'skipped' despite its
+    # dependency genuinely failing, because success() (false) was silently gating the expression.
+    if: failure() && needs.smoke-test-production.result == 'failure'
     runs-on: ubuntu-latest
-    # Deliberately NOT gated by environment: production (unlike promote-to-production).
-    # Reverting to an already-previously-verified-good state is lower risk than the forward
-    # promotion was - that's what the human gate was actually for. Waiting on approval here would
-    # just leave a known-broken production up for longer, which is the worse outcome.
     permissions:
       contents: read
-      # scripts/find-rollback-target.sh needs this to list/inspect past
-      # events-service-production-promotion.yml runs and jobs, and to read the
-      # smoke-test-evidence-production artifact, via gh.
       actions: read
     steps:
       - uses: actions/checkout@v4
@@ -177,9 +175,7 @@ jobs:
           Failed run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           git push
 
-      # No re-verification smoke test here on purpose (avoids recursive complexity for now, per
-      # design) - just a clear record of what happened. ArgoCD picks this commit up the same way
-      # it does every other change to this repo, no manual action needed.
+
       - name: Report rollback
         run: |
           {
