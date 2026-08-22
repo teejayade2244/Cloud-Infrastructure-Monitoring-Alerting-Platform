@@ -2,6 +2,7 @@ apiVersion: backstage.io/v1alpha1
 kind: Component
 metadata:
     name: event-service
+    description: Ingests and serves platform events
 spec:
     type: service
     lifecycle: experimental
