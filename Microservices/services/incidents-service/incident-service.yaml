@@ -3,6 +3,9 @@ kind: Component
 metadata:
     name: incident-service
     description: Incident record store - create, list, update and close tracked incidents
+    tags:
+        - dotnet
+        - incidents
 spec:
     type: service
     lifecycle: experimental
