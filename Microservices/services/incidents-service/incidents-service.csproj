@@ -5,6 +5,10 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>incidents_service</RootNamespace>
+    <!-- Trivy's fs-mode NuGet scanning needs packages.lock.json, packages.config, or
+         *Packages.props to find anything - it doesn't parse a bare .csproj (confirmed against
+         its own docs). This generates and pins the lock file committed alongside this project. -->
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
   </PropertyGroup>
 
   <ItemGroup>

@@ -12,19 +12,21 @@ namespace incidents_service.Controllers
     {
         private readonly IIncidentService _incidentService;
         private readonly CosmosClient _cosmosClient;
+        private readonly CosmosDatabaseOptions _dbOptions;
 
-        public IncidentsController(IIncidentService incidentService, CosmosClient cosmosClient)
-{
-    _incidentService = incidentService;
-    _cosmosClient = cosmosClient;
-}
+        public IncidentsController(IIncidentService incidentService, CosmosClient cosmosClient, CosmosDatabaseOptions dbOptions)
+        {
+            _incidentService = incidentService;
+            _cosmosClient = cosmosClient;
+            _dbOptions = dbOptions;
+        }
 
         [HttpGet("/notifications")]
         public async Task<IActionResult> GetNotifications()
         {
             try
             {
-                var container = _cosmosClient.GetDatabase("InfraMonitorDB").GetContainer("Notifications");
+                var container = _cosmosClient.GetDatabase(_dbOptions.DatabaseName).GetContainer("Notifications");
                 var query = "SELECT * FROM c ORDER BY c.sentAt DESC OFFSET 0 LIMIT 50";
                 var notifications = new List<NotificationItem>();
                 var iterator = container.GetItemQueryIterator<NotificationItem>(query);
@@ -58,7 +60,7 @@ namespace incidents_service.Controllers
             }
 
             var incident = await _incidentService.CreateIncidentAsync(request);
-            return CreatedAtAction(nameof(GetIncident), 
+            return CreatedAtAction(nameof(GetIncident),
                 new { id = incident.Id, severity = incident.Severity }, incident);
         }
 
