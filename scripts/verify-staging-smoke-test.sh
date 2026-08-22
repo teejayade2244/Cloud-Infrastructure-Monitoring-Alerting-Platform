@@ -5,30 +5,35 @@ set -euo pipefail
 # image_tag - a plausible-looking tag input must not be able to bypass this.
 #
 # image_tag IS ${GITHUB_SHA::7} of whatever commit build-image built it from (see
-# events-service-ci.yml) - not a heuristic label, an exact, deterministic function of the commit.
-# So finding "the run that built this tag" is exactly "the events-service-ci.yml run on main
-# whose headSha starts with this value" - no artifact inspection or tag-to-commit lookup needed,
-# the correspondence is already exact by construction.
+# <service>-ci.yml) - not a heuristic label, an exact, deterministic function of the commit. So
+# finding "the run that built this tag" is exactly "the WORKFLOW_FILE run on main whose headSha
+# starts with this value" - no artifact inspection or tag-to-commit lookup needed, the
+# correspondence is already exact by construction.
+#
+# WORKFLOW_FILE defaults to events-service-ci.yml so events-service-production-promotion.yml's
+# existing call (which doesn't set it) keeps working unchanged - shared by any service's
+# production-promotion workflow, one per CI workflow it needs to verify against.
 
 IMAGE_TAG="${IMAGE_TAG:?IMAGE_TAG must be set}"
 REPO="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY must be set}"
+WORKFLOW_FILE="${WORKFLOW_FILE:-events-service-ci.yml}"
 
 if ! [[ "$IMAGE_TAG" =~ ^[0-9a-f]{7}$ ]]; then
   echo "::error::image_tag '${IMAGE_TAG}' doesn't look like a short SHA (expected 7 lowercase hex characters) - refusing to promote an unverified artifact"
   exit 1
 fi
 
-echo "Searching recent events-service-ci.yml runs on main for a commit matching ${IMAGE_TAG}..."
+echo "Searching recent ${WORKFLOW_FILE} runs on main for a commit matching ${IMAGE_TAG}..."
 
 # --status completed: an in-progress/queued run can't have a successful smoke-test-staging job
 # yet anyway, no point checking it.
-RUNS=$(gh run list --repo "$REPO" --workflow=events-service-ci.yml --branch=main \
+RUNS=$(gh run list --repo "$REPO" --workflow="$WORKFLOW_FILE" --branch=main \
   --status completed --json databaseId,headSha --limit 100)
 
 MATCHING_RUN_IDS=$(echo "$RUNS" | jq -r --arg tag "$IMAGE_TAG" '.[] | select(.headSha | startswith($tag)) | .databaseId')
 
 if [ -z "$MATCHING_RUN_IDS" ]; then
-  echo "::error::no verified staging smoke test found for tag ${IMAGE_TAG} - refusing to promote an unverified artifact (no completed events-service-ci.yml run on main in the last 100 matched this commit)"
+  echo "::error::no verified staging smoke test found for tag ${IMAGE_TAG} - refusing to promote an unverified artifact (no completed ${WORKFLOW_FILE} run on main in the last 100 matched this commit)"
   exit 1
 fi
 
