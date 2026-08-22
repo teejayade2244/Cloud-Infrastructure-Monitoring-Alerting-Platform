@@ -1,0 +1,9 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+    name: incident-service
+    description: Incident record store - create, list, update and close tracked incidents
+spec:
+    type: service
+    lifecycle: experimental
+    owner: guests
