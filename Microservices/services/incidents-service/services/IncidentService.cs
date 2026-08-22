@@ -12,16 +12,16 @@ namespace incidents_service.Services
         Task<Incident?> UpdateIncidentAsync(string id, string severity, UpdateIncidentRequest request);
     }
 
-public class IncidentService : IIncidentService
-{
-    private readonly Container _container;
-
-    public IncidentService(CosmosClient cosmosClient)
+    public class IncidentService : IIncidentService
     {
-        _container = cosmosClient
-            .GetDatabase("InfraMonitorDB")
-            .GetContainer("Incidents");
-    }
+        private readonly Container _container;
+
+        public IncidentService(CosmosClient cosmosClient, CosmosDatabaseOptions dbOptions)
+        {
+            _container = cosmosClient
+                .GetDatabase(dbOptions.DatabaseName)
+                .GetContainer("Incidents");
+        }
 
         public async Task<Incident> CreateIncidentAsync(CreateIncidentRequest request)
         {
@@ -40,23 +40,23 @@ public class IncidentService : IIncidentService
             return incident;
         }
 
-   public async Task<List<Incident>> GetIncidentsAsync(string? severity, string? status, string? environment)
-{
-    var query = "SELECT * FROM c WHERE 1=1";
-    if (!string.IsNullOrEmpty(severity)) query += $" AND c.severity = '{severity}'";
-    if (!string.IsNullOrEmpty(status)) query += $" AND c.status = '{status}'";
-    if (!string.IsNullOrEmpty(environment)) query += $" AND c.environment = '{environment}'";
-    query += " ORDER BY c.createdAt DESC OFFSET 0 LIMIT 50";
+        public async Task<List<Incident>> GetIncidentsAsync(string? severity, string? status, string? environment)
+        {
+            var query = "SELECT * FROM c WHERE 1=1";
+            if (!string.IsNullOrEmpty(severity)) query += $" AND c.severity = '{severity}'";
+            if (!string.IsNullOrEmpty(status)) query += $" AND c.status = '{status}'";
+            if (!string.IsNullOrEmpty(environment)) query += $" AND c.environment = '{environment}'";
+            query += " ORDER BY c.createdAt DESC OFFSET 0 LIMIT 50";
 
-    var incidents = new List<Incident>();
-    var iterator = _container.GetItemQueryIterator<Incident>(query);
-    while (iterator.HasMoreResults)
-    {
-        var response = await iterator.ReadNextAsync();
-        incidents.AddRange(response);
-    }
-    return incidents;
-}
+            var incidents = new List<Incident>();
+            var iterator = _container.GetItemQueryIterator<Incident>(query);
+            while (iterator.HasMoreResults)
+            {
+                var response = await iterator.ReadNextAsync();
+                incidents.AddRange(response);
+            }
+            return incidents;
+        }
         public async Task<Incident?> GetIncidentByIdAsync(string id, string severity)
         {
             try

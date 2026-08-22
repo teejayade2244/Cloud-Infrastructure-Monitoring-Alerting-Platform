@@ -63,6 +63,8 @@ artifacts/
 *.user
 *.vs/
 appsettings.Development.json
+TestResults/
+coverage.cobertura.xml
 
 # OS generated files
 Thumbs.db
