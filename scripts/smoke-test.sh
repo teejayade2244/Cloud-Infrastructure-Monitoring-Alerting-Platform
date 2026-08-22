@@ -93,10 +93,11 @@ cleanup() {
     --arg health_status "${HTTP_STATUS:-}" \
     --arg write_id "${WRITE_ID:-}" \
     --arg post_status "${POST_STATUS:-}" \
+    --arg read_status "${GET_STATUS:-}" \
     --arg cleanup_status "${CLEANUP_STATUS:-}" \
     --arg result "$([ "$exit_code" -eq 0 ] && echo success || echo failure)" \
     --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    '{run_id: $run_id, service: $service, environment: $environment, namespace: $namespace, image_tag: $image_tag, pod_name: $pod_name, health_status: $health_status, write_id: $write_id, post_status: $post_status, cleanup_status: $cleanup_status, result: $result, timestamp: $timestamp}' \
+    '{run_id: $run_id, service: $service, environment: $environment, namespace: $namespace, image_tag: $image_tag, pod_name: $pod_name, health_status: $health_status, write_id: $write_id, post_status: $post_status, read_status: $read_status, cleanup_status: $cleanup_status, result: $result, timestamp: $timestamp}' \
     > "$EVIDENCE_DIR/summary.json" 2>/dev/null || true
   exit "$exit_code"
 }
@@ -236,6 +237,24 @@ verify_write_events() {
     exit 1
   fi
   echo "Cosmos DB write confirmed: event ${WRITE_ID} (source=${TEST_SOURCE}) created via pod ${POD}'s Workload Identity."
+
+  # A successful create doesn't prove GET /events/:id's separate query path works - it's a
+  # structurally different Cosmos call (a cross-partition query, not the create response echoed
+  # back), so read the same document back through the real API to close that gap.
+  GET_STATUS=$(curl -s -o "$EVIDENCE_DIR/read-response.json" -w '%{http_code}' \
+    "http://localhost:3000/events/${WRITE_ID}")
+  echo "GET /events/${WRITE_ID} -> HTTP ${GET_STATUS}"
+  cat "$EVIDENCE_DIR/read-response.json"
+  if [ "$GET_STATUS" != "200" ]; then
+    echo "::error::GET /events/${WRITE_ID} on pod ${POD} returned HTTP ${GET_STATUS} (expected 200) - the write succeeded but reading it back failed"
+    exit 1
+  fi
+  READ_ID=$(jq -r '.id // empty' "$EVIDENCE_DIR/read-response.json")
+  if [ "$READ_ID" != "$WRITE_ID" ]; then
+    echo "::error::GET /events/${WRITE_ID} returned HTTP 200 but its id (${READ_ID:-<empty>}) doesn't match what was written (${WRITE_ID})"
+    exit 1
+  fi
+  echo "Cosmos DB read confirmed: event ${WRITE_ID} reads back correctly via pod ${POD}'s Workload Identity."
 }
 
 # Schema per Controllers/IncidentsController.cs's CreateIncident validation: title/severity/
@@ -265,6 +284,24 @@ verify_write_incidents() {
     exit 1
   fi
   echo "Cosmos DB write confirmed: incident ${WRITE_ID} (source=${TEST_SOURCE}) created via pod ${POD}'s Workload Identity."
+
+  # Same reasoning as events-service: a successful create doesn't prove GetIncidentByIdAsync's
+  # point-read (a structurally different Cosmos call, keyed on id + the severity partition key)
+  # actually works - read the same document back through the real API to close that gap.
+  GET_STATUS=$(curl -s -o "$EVIDENCE_DIR/read-response.json" -w '%{http_code}' \
+    "http://localhost:3000/incidents/${WRITE_ID}?severity=${WRITE_PARTITION_KEY}")
+  echo "GET /incidents/${WRITE_ID}?severity=${WRITE_PARTITION_KEY} -> HTTP ${GET_STATUS}"
+  cat "$EVIDENCE_DIR/read-response.json"
+  if [ "$GET_STATUS" != "200" ]; then
+    echo "::error::GET /incidents/${WRITE_ID} on pod ${POD} returned HTTP ${GET_STATUS} (expected 200) - the write succeeded but reading it back failed"
+    exit 1
+  fi
+  READ_ID=$(jq -r '.id // empty' "$EVIDENCE_DIR/read-response.json")
+  if [ "$READ_ID" != "$WRITE_ID" ]; then
+    echo "::error::GET /incidents/${WRITE_ID} returned HTTP 200 but its id (${READ_ID:-<empty>}) doesn't match what was written (${WRITE_ID})"
+    exit 1
+  fi
+  echo "Cosmos DB read confirmed: incident ${WRITE_ID} reads back correctly via pod ${POD}'s Workload Identity."
 }
 
 case "$SERVICE_NAME" in
