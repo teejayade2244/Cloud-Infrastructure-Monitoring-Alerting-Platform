@@ -156,6 +156,11 @@ jobs:
 
   integration-tests:
     name: Integration Tests (real Cosmos DB + Service Bus)
+    # Gated on lint-and-format + unit-tests, same as build-image - this job hits a real Cosmos DB
+    # and Service Bus, so it shouldn't fire (and burn real cloud resources) on a build that's
+    # already doomed to be blocked before push-image. Confirmed the hard way: without this needs:,
+    # a failed lint-and-format run still let this job run to completion in full.
+    needs: [lint-and-format, unit-tests]
     if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     permissions:
