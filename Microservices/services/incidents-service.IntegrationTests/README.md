@@ -54,6 +54,14 @@ COSMOS_TEST_DATABASE=InfraMonitorTestDB \
 dotnet test
 ```
 
+A local `dotnet test` run against real infrastructure was attempted directly during development
+and hung indefinitely (20+ minutes, no failure, no completion) even after `az login`, most likely
+because this machine can't actually reach the Cosmos DB endpoint the way GitHub Actions runners
+can - `DefaultAzureCredential`'s chain itself resolves fine (confirmed via `az account show`), so
+this reads as a network-level reachability gap, not a credential problem. The real, authoritative
+verification for this project is CI, not local - it's already confirmed working there (see the
+CI note below).
+
 In CI, these come from the `COSMOS_ENDPOINT`/`COSMOS_TEST_DATABASE` GitHub Variables (already
 shared with events-service's integration tests, same Cosmos account) via
 `service-ci-template.yml`'s opaque `integration_test_vars` input, and `AZURE_CLIENT_ID` from the
