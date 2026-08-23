@@ -48,6 +48,13 @@ on:
         required: false
         type: string
         default: ''
+      smoke_test_script_path:
+        description: >-
+          Path, in your own repository, to the script that runs the smoke test described above.
+          Only meaningful when has_smoke_test is true.
+        required: false
+        type: string
+        default: 'scripts/smoke-test.sh'
     secrets:
       azure_client_id_smoke:
         description: "Client ID of the identity used by smoke-test-production to authenticate to the Kubernetes cluster and verify the promoted deployment."
@@ -164,7 +171,7 @@ jobs:
           ARGOCD_APP_NAME: ${{ inputs.service_name }}-production
           ENVIRONMENT_LABEL: production
           SERVICE_NAME: ${{ inputs.service_name }}
-        run: scripts/smoke-test.sh
+        run: ${{ inputs.smoke_test_script_path }}
 
       - name: Upload smoke test evidence
         if: always()
