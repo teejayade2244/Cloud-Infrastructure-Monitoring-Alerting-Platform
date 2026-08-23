@@ -5,13 +5,13 @@ Node.js/Express service for recording infrastructure events. Writes events to Co
 
 ## Endpoints
 
-| Method | Path            | Description                                                              |
-|--------|-----------------|---------------------------------------------------------------------------|
-| GET    | `/health`       | Liveness/readiness check, used by the CI smoke test and Kubernetes probes |
-| POST   | `/events`       | Create an event; publishes to Service Bus if severity is `critical`/`high` |
-| GET    | `/events`       | List events, optionally filtered by `environment`, `severity`, `type`     |
-| GET    | `/events/:id`   | Get a single event by id                                                  |
-| DELETE | `/events/:id`   | Delete a single event by id                                               |
+| Method | Path          | Description                                                                |
+| ------ | ------------- | -------------------------------------------------------------------------- |
+| GET    | `/health`     | Liveness/readiness check, used by the CI smoke test and Kubernetes probes  |
+| POST   | `/events`     | Create an event; publishes to Service Bus if severity is `critical`/`high` |
+| GET    | `/events`     | List events, optionally filtered by `environment`, `severity`, `type`      |
+| GET    | `/events/:id` | Get a single event by id                                                   |
+| DELETE | `/events/:id` | Delete a single event by id                                                |
 
 ## Local development
 
