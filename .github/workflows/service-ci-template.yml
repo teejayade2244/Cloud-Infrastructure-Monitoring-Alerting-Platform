@@ -139,6 +139,13 @@ on:
         required: false
         type: string
         default: ''
+      smoke_test_script_path:
+        description: >-
+          Path, in your own repository, to the script that runs the smoke test described above.
+          Only meaningful when has_smoke_test is true.
+        required: false
+        type: string
+        default: 'scripts/smoke-test.sh'
     secrets:
       azure_client_id_ci:
         description: "Client ID of the identity used by integration-tests to authenticate to whatever real external systems it depends on."
@@ -510,7 +517,7 @@ jobs:
           # smoke-test.sh's own default) - a shared template shouldn't depend on one caller's
           # value happening to match the script's default.
           SERVICE_NAME: ${{ inputs.service_name }}
-        run: scripts/smoke-test.sh
+        run: ${{ inputs.smoke_test_script_path }}
 
       - name: Upload smoke test evidence
         if: always()
@@ -523,13 +530,6 @@ jobs:
   rollback-staging:
     name: Rollback staging (automatic)
     needs: smoke-test-staging
-    # failure() is required here, not just the needs.*.result check alone: GitHub Actions
-    # silently ANDs an implicit success() onto any job's if: condition unless it already contains
-    # one of the status-check functions - a real, previously-fixed bug in this project. Applied
-    # correctly from the start in this template, not something to rediscover during the refactor.
-    # (Also correctly handles has_smoke_test: false for free - a SKIPPED smoke-test-staging has
-    # result 'skipped', not 'failure', so this condition stays false and rollback stays skipped
-    # too, no extra logic needed.)
     if: failure() && needs.smoke-test-staging.result == 'failure'
     runs-on: ubuntu-latest
     permissions:
