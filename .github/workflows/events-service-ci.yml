@@ -11,6 +11,18 @@ on:
   # change touches only this workflow file and so wouldn't match either paths: filter above.
   workflow_dispatch: {}
 
+# A job inside a called workflow_call template can only request permissions up to what THIS
+# calling workflow grants at its own top level - confirmed the hard way, via a real
+# startup_failure ("nested job 'sast' is requesting 'security-events: write', but is only allowed
+# 'security-events: none'"). This is the union of every distinct scope any job in
+# service-ci-template.yml requests; each job's own, narrower permissions: block still applies on
+# top of this ceiling, so this doesn't loosen any individual job beyond what it already asks for.
+permissions:
+  contents: read
+  security-events: write
+  id-token: write
+  actions: read
+
 jobs:
   call-service-ci:
     uses: ./.github/workflows/service-ci-template.yml

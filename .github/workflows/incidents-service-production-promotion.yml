@@ -9,6 +9,12 @@ on:
         required: true
         type: string
 
+# See events-service-production-promotion.yml for why this exists.
+permissions:
+  contents: read
+  id-token: write
+  actions: read
+
 jobs:
   call-service-promotion:
     uses: ./.github/workflows/service-promotion-template.yml
