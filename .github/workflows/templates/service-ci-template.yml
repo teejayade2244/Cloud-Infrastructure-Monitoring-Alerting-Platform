@@ -1,0 +1,541 @@
+name: service CI template
+
+# Reusable CI pipeline shared by events-service (node) and incidents-service (dotnet). Per the
+# comparison in docs/reusable-workflow-analysis.md: 6 of 10 jobs are clean Category A
+# (parameter-only), 3 are A-shaped with a narrow language-specific interior
+# (lint-and-format/unit-tests/sast), and unit-tests alone is genuinely language-forced end to end.
+# workflow_call templates cannot declare their own push/pull_request paths: trigger - that stays
+# in each service's thin caller file (events-service-ci.yml / incidents-service-ci.yml).
+
+on:
+  workflow_call:
+    inputs:
+      service_name:
+        description: "e.g. events-service - also derives WORKING_DIR, image tag, chart file names, WORKFLOW_FILE"
+        required: true
+        type: string
+      language:
+        description: "'node' or 'dotnet' - gates the interior of lint-and-format, unit-tests, and sast only"
+        required: true
+        type: string
+      chart_path:
+        description: "Chart directory in inframonitor-gitops, e.g. charts/events-service (values-staging.yaml is appended)"
+        required: true
+        type: string
+      image_repository:
+        description: "Full ACR repository path, e.g. inframonitoraksacr.azurecr.io/events-service"
+        required: true
+        type: string
+      has_integration_tests:
+        description: "Whether real integration-test code exists for this service yet (events-service: true, incidents-service: false until its dotnet integration tests are written)"
+        required: true
+        type: boolean
+    secrets:
+      azure_client_id_ci:
+        required: true
+      azure_client_id_cd:
+        required: true
+      azure_client_id_smoke:
+        required: true
+      gitops_pat:
+        required: true
+      azure_tenant_id:
+        required: true
+      azure_subscription_id:
+        required: true
+
+# Restrictive default; sast overrides to add security-events: write, same as both original files.
+permissions:
+  contents: read
+
+jobs:
+  lint-and-format:
+    name: Lint & Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # --- node branch ---
+      - uses: actions/setup-node@v4
+        if: inputs.language == 'node'
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: Microservices/services/${{ inputs.service_name }}/package-lock.json
+
+      - name: npm ci
+        if: inputs.language == 'node'
+        working-directory: Microservices/services/${{ inputs.service_name }}
+        run: npm ci
+
+      - name: npm run lint
+        if: inputs.language == 'node'
+        working-directory: Microservices/services/${{ inputs.service_name }}
+        run: npm run lint
+
+      - name: npm run format:check
+        if: inputs.language == 'node'
+        working-directory: Microservices/services/${{ inputs.service_name }}
+        run: npm run format:check
+
+      # --- dotnet branch ---
+      - uses: actions/setup-dotnet@v4
+        if: inputs.language == 'dotnet'
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: dotnet format --verify-no-changes
+        if: inputs.language == 'dotnet'
+        working-directory: Microservices/services/${{ inputs.service_name }}
+        run: dotnet format --verify-no-changes
+
+  unit-tests:
+    name: Unit Tests & Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # --- node branch ---
+      - uses: actions/setup-node@v4
+        if: inputs.language == 'node'
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: Microservices/services/${{ inputs.service_name }}/package-lock.json
+
+      - name: npm ci
+        if: inputs.language == 'node'
+        working-directory: Microservices/services/${{ inputs.service_name }}
+        run: npm ci
+
+      - name: npm run test:coverage
+        if: inputs.language == 'node'
+        working-directory: Microservices/services/${{ inputs.service_name }}
+        run: npm run test:coverage
+
+      - name: Upload coverage report (node)
+        if: always() && inputs.language == 'node'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: Microservices/services/${{ inputs.service_name }}/coverage/
+          retention-days: 14
+
+      # --- dotnet branch --- (test project is a SIBLING of WORKING_DIR, not nested inside it -
+      # confirmed against incidents-service.Tests's real layout - so no job-level
+      # defaults.run.working-directory here; every step is explicit instead)
+      - uses: actions/setup-dotnet@v4
+        if: inputs.language == 'dotnet'
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Run tests with coverage
+        if: inputs.language == 'dotnet'
+        working-directory: Microservices/services/${{ inputs.service_name }}.Tests
+        run: dotnet test /p:CollectCoverage=true /p:CoverletOutputFormat=cobertura /p:Threshold=70 /p:ThresholdType=line /p:ThresholdStat=total
+
+      - name: Upload coverage report (dotnet)
+        if: always() && inputs.language == 'dotnet'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: Microservices/services/${{ inputs.service_name }}.Tests/coverage.cobertura.xml
+          retention-days: 14
+
+  dependency-scan:
+    name: Dependency Scan (${{ inputs.language == 'node' && 'package-lock.json' || 'packages.lock.json' }})
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Filesystem-mode scan of the lockfile directly, before any build happens - distinct from
+      # container-scan, which checks the built image (OS packages + app deps together) after a
+      # full Docker build.
+      - name: Run Trivy dependency scan
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: Microservices/services/${{ inputs.service_name }}
+          format: table
+          output: Microservices/services/${{ inputs.service_name }}/trivy-fs-results.txt
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: 1
+
+      - name: Upload scan results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-dependency-scan-results
+          path: Microservices/services/${{ inputs.service_name }}/trivy-fs-results.txt
+          retention-days: 14
+
+  sast:
+    name: CodeQL (SAST)
+    needs: [lint-and-format, unit-tests]
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # C#'s autobuild needs an SDK present to actually compile - unlike JS's near-no-op
+      # autobuild, this step is genuinely required for dotnet and genuinely absent for node.
+      - uses: actions/setup-dotnet@v4
+        if: inputs.language == 'dotnet'
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Initialize CodeQL (node)
+        if: inputs.language == 'node'
+        uses: github/codeql-action/init@v3.37.7
+        with:
+          languages: javascript
+          config: |
+            paths:
+              - Microservices/services/${{ inputs.service_name }}
+            paths-ignore:
+              - Microservices/services/${{ inputs.service_name }}/node_modules
+              - Microservices/services/${{ inputs.service_name }}/coverage
+
+      - name: Initialize CodeQL (dotnet)
+        if: inputs.language == 'dotnet'
+        uses: github/codeql-action/init@v3.37.7
+        with:
+          languages: csharp
+          config: |
+            paths:
+              - Microservices/services/${{ inputs.service_name }}
+            paths-ignore:
+              - Microservices/services/${{ inputs.service_name }}/bin
+              - Microservices/services/${{ inputs.service_name }}/obj
+
+      - uses: github/codeql-action/autobuild@v3.37.7
+
+      - uses: github/codeql-action/analyze@v3.37.7
+
+  build-image:
+    name: Docker Build
+    needs: [lint-and-format, unit-tests]
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.vars.outputs.image_tag }}
+    defaults:
+      run:
+        working-directory: Microservices/services/${{ inputs.service_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute short SHA tag
+        id: vars
+        run: echo "image_tag=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Build image
+        run: docker build --platform linux/amd64 -t ${{ inputs.image_repository }}:${{ steps.vars.outputs.image_tag }} .
+
+      - name: Save image
+        run: docker save ${{ inputs.image_repository }}:${{ steps.vars.outputs.image_tag }} -o ${{ inputs.service_name }}-image.tar
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docker-image
+          path: Microservices/services/${{ inputs.service_name }}/${{ inputs.service_name }}-image.tar
+          retention-days: 3
+
+  # Always defined (workflow_call templates have a static job graph - a caller can't make a job
+  # disappear), gated by has_integration_tests so it genuinely skips, not silently no-ops, for a
+  # service without integration test code yet. Currently node-only in its steps because that's
+  # the one real implementation that exists (events-service's) - if incidents-service's deferred
+  # dotnet integration tests get written, this job's interior needs a language branch added the
+  # same way lint-and-format/unit-tests/sast already have, not a hardcoded assumption forever.
+  integration-tests:
+    name: Integration Tests (real Cosmos DB + Service Bus)
+    needs: [lint-and-format, unit-tests]
+    if: inputs.has_integration_tests && (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    defaults:
+      run:
+        working-directory: Microservices/services/${{ inputs.service_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: Microservices/services/${{ inputs.service_name }}/package-lock.json
+
+      - run: npm ci
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.azure_client_id_ci }}
+          tenant-id: ${{ secrets.azure_tenant_id }}
+          subscription-id: ${{ secrets.azure_subscription_id }}
+
+      - run: npm run test:integration 2>&1 | tee test-results.txt
+        env:
+          COSMOS_ENDPOINT: ${{ vars.COSMOS_ENDPOINT }}
+          COSMOS_TEST_DATABASE: ${{ vars.COSMOS_TEST_DATABASE }}
+          SERVICEBUS_NAMESPACE: ${{ vars.SERVICEBUS_NAMESPACE }}
+          SERVICEBUS_TEST_TOPIC: ${{ vars.SERVICEBUS_TEST_TOPIC }}
+          SERVICEBUS_TEST_SUBSCRIPTION: ${{ vars.SERVICEBUS_TEST_SUBSCRIPTION }}
+          AZURE_CLIENT_ID: ${{ secrets.azure_client_id_ci }}
+
+      - name: Upload integration test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-results
+          path: Microservices/services/${{ inputs.service_name }}/test-results.txt
+          retention-days: 14
+
+  container-scan:
+    name: Container Vulnerability Scan
+    needs: build-image
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ needs.build-image.outputs.image_tag }}
+    defaults:
+      run:
+        working-directory: Microservices/services/${{ inputs.service_name }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+          path: Microservices/services/${{ inputs.service_name }}
+
+      - run: docker load -i ${{ inputs.service_name }}-image.tar
+
+      - name: Run Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          image-ref: ${{ inputs.image_repository }}:${{ needs.build-image.outputs.image_tag }}
+          format: table
+          output: Microservices/services/${{ inputs.service_name }}/trivy-results.txt
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: 1
+
+      - name: Upload scan results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-scan-results
+          path: Microservices/services/${{ inputs.service_name }}/trivy-results.txt
+          retention-days: 14
+
+      - name: Generate SBOM (CycloneDX)
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ inputs.image_repository }}:${{ needs.build-image.outputs.image_tag }}
+          format: cyclonedx
+          output: Microservices/services/${{ inputs.service_name }}/sbom.cyclonedx.json
+
+      - name: Upload SBOM
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cyclonedx
+          path: Microservices/services/${{ inputs.service_name }}/sbom.cyclonedx.json
+          retention-days: 90
+
+  push-image:
+    name: Push Image to ACR (staging)
+    needs: [container-scan, integration-tests]
+    # integration-tests is ALWAYS a needs: dependency (workflow_call's static job graph means it
+    # always exists), but for a caller with has_integration_tests: false it's skipped, not
+    # failed/succeeded - so this condition explicitly accepts 'skipped' alongside 'success' for
+    # that one dependency, while still hard-requiring container-scan to have genuinely succeeded.
+    # Without the leading always(), the implicit success() GitHub ANDs onto a condition lacking a
+    # status-check function would make this job skip whenever integration-tests skips, which is
+    # exactly the wrong behavior for a service that doesn't have integration tests yet.
+    if: |
+      always() &&
+      needs.container-scan.result == 'success' &&
+      (needs.integration-tests.result == 'success' || needs.integration-tests.result == 'skipped') &&
+      github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ needs.container-scan.outputs.image_tag }}
+    permissions:
+      id-token: write
+      contents: read
+    defaults:
+      run:
+        working-directory: Microservices/services/${{ inputs.service_name }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+          path: Microservices/services/${{ inputs.service_name }}
+
+      - run: docker load -i ${{ inputs.service_name }}-image.tar
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.azure_client_id_cd }}
+          tenant-id: ${{ secrets.azure_tenant_id }}
+          subscription-id: ${{ secrets.azure_subscription_id }}
+
+      - name: Login to ACR
+        run: az acr login --name inframonitoraksacr
+
+      - name: Push image
+        run: docker push ${{ inputs.image_repository }}:${{ needs.container-scan.outputs.image_tag }}
+
+  update-staging-values:
+    name: Update staging image tag (inframonitor-gitops)
+    needs: push-image
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ needs.push-image.outputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: teejayade2244/inframonitor-gitops
+          token: ${{ secrets.gitops_pat }}
+
+      - name: Install yq
+        run: |
+          curl -sL -o /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_amd64
+          chmod +x /usr/local/bin/yq
+
+      - name: Set staging image tag
+        run: yq -i '.image.tag = "${{ needs.push-image.outputs.image_tag }}"' ${{ inputs.chart_path }}/values-staging.yaml
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add ${{ inputs.chart_path }}/values-staging.yaml
+          git commit -m "deploy(staging): ${{ inputs.service_name }} to ${{ needs.push-image.outputs.image_tag }}
+
+          Source: teejayade2244/Cloud-Infrastructure-Monitoring-Alerting-Platform@${{ github.sha }}"
+          git push
+
+  smoke-test-staging:
+    name: Smoke Test (staging)
+    needs: update-staging-values
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      image_tag: ${{ needs.update-staging-values.outputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.azure_client_id_smoke }}
+          tenant-id: ${{ secrets.azure_tenant_id }}
+          subscription-id: ${{ secrets.azure_subscription_id }}
+
+      - name: Install kubectl + kubelogin
+        run: sudo az aks install-cli
+
+      - name: Get AKS credentials
+        run: az aks get-credentials --resource-group inframonitor-aks-rg --name inframonitor-aks --overwrite-existing
+
+      - name: Convert kubeconfig for azurecli auth
+        run: kubelogin convert-kubeconfig -l azurecli
+
+      - name: Run staging smoke test
+        id: smoke_test
+        env:
+          EXPECTED_TAG: ${{ needs.update-staging-values.outputs.image_tag }}
+          NAMESPACE: inframonitor
+          ARGOCD_APP_NAME: ${{ inputs.service_name }}-staging
+          # Always explicit (unlike the pre-template events-service-ci.yml, which relied on
+          # smoke-test.sh's own default) - a shared template shouldn't depend on one caller's
+          # value happening to match the script's default.
+          SERVICE_NAME: ${{ inputs.service_name }}
+        run: scripts/smoke-test.sh
+
+      - name: Upload smoke test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-test-evidence-staging
+          path: smoke-test-evidence/
+          retention-days: 14
+
+  rollback-staging:
+    name: Rollback staging (automatic)
+    needs: smoke-test-staging
+    # failure() is required here, not just the needs.*.result check alone: GitHub Actions
+    # silently ANDs an implicit success() onto any job's if: condition unless it already contains
+    # one of the status-check functions - a real, previously-fixed bug in this project. Applied
+    # correctly from the start in this template, not something to rediscover during the refactor.
+    if: failure() && needs.smoke-test-staging.result == 'failure'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find rollback target
+        id: find_target
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # <service_name>-ci.yml is this template's calling workflow's own filename by
+          # convention (both existing caller files follow it) - derived, not a separate input.
+          WORKFLOW_FILE: ${{ inputs.service_name }}-ci.yml
+          SMOKE_TEST_JOB_NAME: "Smoke Test (staging)"
+          TAG_SOURCE: head_sha
+          LOOKBACK_LIMIT: "10"
+        run: scripts/find-rollback-target.sh
+
+      - name: Checkout inframonitor-gitops
+        uses: actions/checkout@v4
+        with:
+          repository: teejayade2244/inframonitor-gitops
+          token: ${{ secrets.gitops_pat }}
+          path: inframonitor-gitops
+
+      - name: Install yq
+        run: |
+          curl -sL -o /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_amd64
+          chmod +x /usr/local/bin/yq
+
+      - name: Set staging image tag to rollback target
+        working-directory: inframonitor-gitops
+        run: yq -i '.image.tag = "${{ steps.find_target.outputs.rollback_tag }}"' ${{ inputs.chart_path }}/values-staging.yaml
+
+      - name: Commit and push rollback
+        working-directory: inframonitor-gitops
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add ${{ inputs.chart_path }}/values-staging.yaml
+          git commit -m "rollback(staging): automatic rollback to ${{ steps.find_target.outputs.rollback_tag }}
+
+          AUTOMATIC ROLLBACK - triggered by a failed staging smoke test
+          Rolled back FROM: ${{ needs.smoke-test-staging.outputs.image_tag }}
+          Rolled back TO (last verified-good): ${{ steps.find_target.outputs.rollback_tag }}
+          Failed run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          git push
+
+      - name: Report rollback
+        run: |
+          {
+            echo "## Automatic staging rollback"
+            echo ""
+            echo "Smoke test failed for tag \`${{ needs.smoke-test-staging.outputs.image_tag }}\`."
+            echo ""
+            echo "Rolled staging back to tag \`${{ steps.find_target.outputs.rollback_tag }}\` - the most recent tag with a genuinely verified staging smoke test (from run [${{ steps.find_target.outputs.rollback_run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ steps.find_target.outputs.rollback_run_id }})). Pushed to inframonitor-gitops."
+            echo ""
+            echo "ArgoCD will sync this automatically, same as any other change - no manual action needed."
+          } >> "$GITHUB_STEP_SUMMARY"
