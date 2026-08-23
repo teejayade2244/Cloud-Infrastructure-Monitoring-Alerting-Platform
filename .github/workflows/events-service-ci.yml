@@ -32,6 +32,14 @@ jobs:
       chart_path: charts/events-service
       image_repository: inframonitoraksacr.azurecr.io/events-service
       has_integration_tests: true
+      integration_test_vars: |
+        {
+          "COSMOS_ENDPOINT": "${{ vars.COSMOS_ENDPOINT }}",
+          "COSMOS_TEST_DATABASE": "${{ vars.COSMOS_TEST_DATABASE }}",
+          "SERVICEBUS_NAMESPACE": "${{ vars.SERVICEBUS_NAMESPACE }}",
+          "SERVICEBUS_TEST_TOPIC": "${{ vars.SERVICEBUS_TEST_TOPIC }}",
+          "SERVICEBUS_TEST_SUBSCRIPTION": "${{ vars.SERVICEBUS_TEST_SUBSCRIPTION }}"
+        }
     secrets:
       azure_client_id_ci: ${{ secrets.AZURE_CLIENT_ID_EVENTS_CI }}
       azure_client_id_cd: ${{ secrets.AZURE_CLIENT_ID_EVENTS_CD }}
