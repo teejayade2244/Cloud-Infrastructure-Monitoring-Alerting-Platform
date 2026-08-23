@@ -63,6 +63,14 @@ jobs:
           # <service_name>-ci.yml by the same naming convention service-ci-template.yml's
           # rollback-staging job already relies on.
           WORKFLOW_FILE: ${{ inputs.service_name }}-ci.yml
+          # "call-service-ci / " is not decorative - it's the real, literal job name GitHub
+          # Actions reports for any job running inside a workflow_call template, prefixed with
+          # the CALLING job's own id (both CI caller files use call-service-ci). Confirmed the
+          # hard way: this script originally hardcoded the bare "Smoke Test (staging)" name (from
+          # before the reusable-template migration), and a real production promotion failed
+          # against it - the job genuinely succeeded, but under a name this script never
+          # recognized.
+          SMOKE_TEST_JOB_NAME: "call-service-ci / Smoke Test (staging)"
         run: scripts/verify-staging-smoke-test.sh
 
   promote-to-production:
@@ -167,7 +175,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           WORKFLOW_FILE: ${{ inputs.service_name }}-production-promotion.yml
-          SMOKE_TEST_JOB_NAME: "Smoke Test (production)"
+          # "call-service-promotion / " prefix - see verify-staging-smoke-test's env above for why.
+          SMOKE_TEST_JOB_NAME: "call-service-promotion / Smoke Test (production)"
           # Production runs are workflow_dispatch-triggered - no head_sha-to-tag correspondence
           # the way staging has (GitHub's Actions API exposes no input-value field at all for a
           # completed run). The smoke-test-evidence-production artifact Smoke Test (production)

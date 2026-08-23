@@ -1,29 +1,5 @@
 name: service CI template
 
-# Reusable CI pipeline for any service in any language. About two-thirds of the jobs
-# (dependency-scan, build-image, container-scan, and - where used - the deploy/verify jobs) never
-# touch source code at all, so they're identical regardless of the caller's tech stack. The jobs
-# that do touch source code (lint-and-format, unit-tests, sast, integration-tests) are
-# language-agnostic by construction: the caller supplies a container image with its own toolchain
-# already installed (build_container_image) plus the actual commands to run
-# (lint_command/test_command/etc.), so adopting this template never means editing this shared
-# file - only supplying inputs.
-#
-# build_container_image, not a dynamic setup action, is deliberate: a step's `uses:` cannot
-# reference the inputs context at all (a real GitHub Actions constraint, not a style choice) -
-# there's no way to pick one language's setup action over another's by expression. Running the
-# job inside a container that already has the right toolchain sidesteps that limitation entirely,
-# and is the standard pattern for language-agnostic reusable workflows.
-#
-# update-staging-values/smoke-test-staging are the deliberate exceptions to "fully generic": they
-# assume a specific GitOps + Kubernetes deployment mechanism (see has_gitops_deploy and
-# has_smoke_test below) - that specificity is the actual value of those jobs, not incidental
-# scaffolding to generalize away. A caller with a different deployment target skips them (false)
-# and brings its own deploy/verify job instead of expecting these to become generic too.
-#
-# workflow_call templates cannot declare their own push/pull_request paths: trigger - that stays
-# in each service's own thin caller workflow file.
-
 on:
   workflow_call:
     inputs:
@@ -40,7 +16,7 @@ on:
         type: string
       has_gitops_deploy:
         description: >-
-          Whether to run update-staging-values (writing the new image tag to your GitOps
+          Whether to run update-staging-values.yaml (writing the new image tag to your GitOps
           repository via a Helm values file edit + git push) after the image is built and pushed.
           This is a skip toggle, not an escape hatch to a different deploy mechanism - a caller
           not using Helm/GitOps should skip this entirely (false) and bring its own deploy job.
@@ -193,9 +169,6 @@ jobs:
         working-directory: ${{ inputs.working_directory }}
         run: ${{ inputs.install_command }}
 
-      # No job-level defaults.run.working-directory - unit_test_working_directory may be a
-      # sibling of the service's own directory (confirmed against incidents-service.Tests's real
-      # layout), not nested inside it, so every step that needs a directory is explicit instead.
       - name: Run tests
         working-directory: ${{ inputs.unit_test_working_directory != '' && inputs.unit_test_working_directory || inputs.working_directory }}
         run: ${{ inputs.test_command }}
@@ -296,9 +269,6 @@ jobs:
           path: ${{ inputs.working_directory }}/${{ inputs.service_name }}-image.tar
           retention-days: 3
 
-  # Always defined (workflow_call templates have a static job graph - a caller can't make a job
-  # disappear), gated by has_integration_tests so it genuinely skips, not silently no-ops, for a
-  # service without integration test code yet.
   integration-tests:
     name: Integration Tests
     needs: [lint-and-format, unit-tests]
@@ -316,13 +286,6 @@ jobs:
         working-directory: ${{ inputs.working_directory }}
         run: ${{ inputs.install_command }}
 
-      # Unlike push-image/smoke-test-staging (bare ubuntu-latest, az pre-installed by the runner
-      # image), this job runs inside build_container_image - a caller-supplied image with no
-      # reason to have the Azure CLI. Confirmed the hard way: azure/login failed here with
-      # "Unable to locate executable file: az" before this step existed. The official install
-      # script assumes a Debian/Ubuntu-based image (true for both node:20 and
-      # mcr.microsoft.com/dotnet/sdk:10.0, the two real images in use) - a caller on a
-      # fundamentally different base (e.g. Alpine) would need their own equivalent install here.
       - name: Install Azure CLI
         run: curl -sL https://aka.ms/InstallAzureCLIDeb | bash
 
@@ -330,19 +293,6 @@ jobs:
         with:
           client-id: ${{ secrets.azure_client_id_ci }}
           tenant-id: ${{ secrets.azure_tenant_id }}
-          # No subscription-id here, deliberately - confirmed the hard way, via two real failed
-          # runs against incidents-service-ci-identity: (1) with subscription-id set and no
-          # allow-no-subscriptions, login fails "No subscriptions found", because this identity
-          # has zero standard Azure RBAC role assignments (Cosmos DB's data-plane RBAC, its only
-          # real grant, is a separate authorization system that doesn't count). (2) adding
-          # allow-no-subscriptions: true while STILL passing subscription-id then fails
-          # differently - "The subscription of '***' doesn't exist in cloud 'AzureCloud'" - az
-          # tries to `account set` to that ID and can't, since the identity's enumerable
-          # subscription list is empty. The two options are mutually exclusive in practice; since
-          # this identity only ever needs an AAD token for Cosmos DB (no ARM calls at all),
-          # dropping subscription-id entirely alongside allow-no-subscriptions is correct, not a
-          # workaround. events-service-ci-identity never hit this because it incidentally also
-          # holds real Service Bus RBAC roles.
           allow-no-subscriptions: true
 
       # A step's env: is either a plain mapping or a single expression - there's no way to merge
@@ -571,7 +521,11 @@ jobs:
           # <service_name>-ci.yml is this template's calling workflow's own filename by
           # convention (both existing caller files follow it) - derived, not a separate input.
           WORKFLOW_FILE: ${{ inputs.service_name }}-ci.yml
-          SMOKE_TEST_JOB_NAME: "Smoke Test (staging)"
+          # "call-service-ci / " prefix - see verify-staging-smoke-test.sh's SMOKE_TEST_JOB_NAME
+          # comment for why: this is the real, literal job name GitHub Actions reports for a job
+          # running inside a workflow_call template (both CI caller files use call-service-ci as
+          # their calling job id), confirmed the hard way via a real failed production promotion.
+          SMOKE_TEST_JOB_NAME: "call-service-ci / Smoke Test (staging)"
           TAG_SOURCE: head_sha
           LOOKBACK_LIMIT: "10"
         run: scripts/find-rollback-target.sh
