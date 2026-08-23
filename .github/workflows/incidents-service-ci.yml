@@ -31,8 +31,10 @@ jobs:
       service_name: incidents-service
       working_directory: Microservices/services/incidents-service
       has_gitops_deploy: true
+      gitops_repository: teejayade2244/inframonitor-gitops
       chart_path: charts/incidents-service
       image_repository: inframonitoraksacr.azurecr.io/incidents-service
+      container_registry_name: inframonitoraksacr
       build_container_image: mcr.microsoft.com/dotnet/sdk:10.0
       lint_command: dotnet format --verify-no-changes
       test_command: dotnet test /p:CollectCoverage=true /p:CoverletOutputFormat=cobertura /p:Threshold=70 /p:ThresholdType=line /p:ThresholdStat=total
@@ -52,6 +54,9 @@ jobs:
           "COSMOS_TEST_DATABASE": "${{ vars.COSMOS_TEST_DATABASE }}"
         }
       has_smoke_test: true
+      aks_resource_group: inframonitor-aks-rg
+      aks_cluster_name: inframonitor-aks
+      staging_namespace: inframonitor
     secrets:
       azure_client_id_ci: ${{ secrets.AZURE_CLIENT_ID_INCIDENTS_CI }}
       azure_client_id_cd: ${{ secrets.AZURE_CLIENT_ID_INCIDENTS_CD }}

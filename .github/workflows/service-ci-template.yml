@@ -26,6 +26,11 @@ on:
         required: false
         type: boolean
         default: true
+      gitops_repository:
+        description: "Your GitOps repository, as owner/repo, e.g. my-org/my-gitops-repo. Only meaningful when has_gitops_deploy is true."
+        required: false
+        type: string
+        default: ''
       chart_path:
         description: "Chart directory in your GitOps repository, e.g. charts/my-service (values-staging.yaml is appended). Only meaningful when has_gitops_deploy is true."
         required: false
@@ -33,6 +38,10 @@ on:
         default: ''
       image_repository:
         description: "Full container registry repository path for this service's image, e.g. myregistry.azurecr.io/my-service."
+        required: true
+        type: string
+      container_registry_name:
+        description: "Just the registry name push-image logs into, e.g. myregistry (the part of image_repository before .azurecr.io). Kept as its own input rather than parsed out of image_repository, since GitHub Actions expressions have no string-split function."
         required: true
         type: string
       build_container_image:
@@ -115,6 +124,21 @@ on:
         required: false
         type: boolean
         default: true
+      aks_resource_group:
+        description: "Resource group of the AKS cluster smoke-test-staging verifies against. Only meaningful when has_smoke_test is true."
+        required: false
+        type: string
+        default: ''
+      aks_cluster_name:
+        description: "Name of the AKS cluster smoke-test-staging verifies against. Only meaningful when has_smoke_test is true."
+        required: false
+        type: string
+        default: ''
+      staging_namespace:
+        description: "Kubernetes namespace the staging deployment lives in. Only meaningful when has_smoke_test is true."
+        required: false
+        type: string
+        default: ''
     secrets:
       azure_client_id_ci:
         description: "Client ID of the identity used by integration-tests to authenticate to whatever real external systems it depends on."
@@ -412,13 +436,13 @@ jobs:
           subscription-id: ${{ secrets.azure_subscription_id }}
 
       - name: Login to ACR
-        run: az acr login --name inframonitoraksacr
+        run: az acr login --name ${{ inputs.container_registry_name }}
 
       - name: Push image
         run: docker push ${{ inputs.image_repository }}:${{ needs.container-scan.outputs.image_tag }}
 
   update-staging-values:
-    name: Update staging image tag (inframonitor-gitops)
+    name: Update staging image tag (GitOps)
     needs: push-image
     if: inputs.has_gitops_deploy && github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
@@ -427,7 +451,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: teejayade2244/inframonitor-gitops
+          repository: ${{ inputs.gitops_repository }}
           token: ${{ secrets.gitops_pat }}
 
       - name: Install yq
@@ -445,7 +469,7 @@ jobs:
           git add ${{ inputs.chart_path }}/values-staging.yaml
           git commit -m "deploy(staging): ${{ inputs.service_name }} to ${{ needs.push-image.outputs.image_tag }}
 
-          Source: teejayade2244/Cloud-Infrastructure-Monitoring-Alerting-Platform@${{ github.sha }}"
+          Source: ${{ github.repository }}@${{ github.sha }}"
           git push
 
   smoke-test-staging:
@@ -471,7 +495,7 @@ jobs:
         run: sudo az aks install-cli
 
       - name: Get AKS credentials
-        run: az aks get-credentials --resource-group inframonitor-aks-rg --name inframonitor-aks --overwrite-existing
+        run: az aks get-credentials --resource-group ${{ inputs.aks_resource_group }} --name ${{ inputs.aks_cluster_name }} --overwrite-existing
 
       - name: Convert kubeconfig for azurecli auth
         run: kubelogin convert-kubeconfig -l azurecli
@@ -480,7 +504,7 @@ jobs:
         id: smoke_test
         env:
           EXPECTED_TAG: ${{ needs.update-staging-values.outputs.image_tag }}
-          NAMESPACE: inframonitor
+          NAMESPACE: ${{ inputs.staging_namespace }}
           ARGOCD_APP_NAME: ${{ inputs.service_name }}-staging
           # Always explicit (unlike the pre-template events-service-ci.yml, which relied on
           # smoke-test.sh's own default) - a shared template shouldn't depend on one caller's
@@ -530,10 +554,10 @@ jobs:
           LOOKBACK_LIMIT: "10"
         run: scripts/find-rollback-target.sh
 
-      - name: Checkout inframonitor-gitops
+      - name: Checkout GitOps repository
         uses: actions/checkout@v4
         with:
-          repository: teejayade2244/inframonitor-gitops
+          repository: ${{ inputs.gitops_repository }}
           token: ${{ secrets.gitops_pat }}
           path: inframonitor-gitops
 

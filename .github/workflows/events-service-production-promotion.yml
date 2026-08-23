@@ -23,8 +23,12 @@ jobs:
     uses: ./.github/workflows/service-promotion-template.yml
     with:
       service_name: events-service
+      gitops_repository: teejayade2244/inframonitor-gitops
       chart_path: charts/events-service
       image_tag: ${{ inputs.image_tag }}
+      aks_resource_group: inframonitor-aks-rg
+      aks_cluster_name: inframonitor-aks
+      production_namespace: inframonitor-production
     secrets:
       azure_client_id_smoke: ${{ secrets.AZURE_CLIENT_ID_EVENTS_SMOKE }}
       gitops_pat: ${{ secrets.GITOPS_PAT }}
