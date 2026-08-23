@@ -16,9 +16,10 @@ name: service CI template
 # whatever container image already has the caller's toolchain installed sidesteps that
 # limitation entirely, and is the standard pattern for language-agnostic reusable workflows.
 #
-# smoke-test-staging is the one deliberate exception to "fully generic": it stays AKS/ArgoCD-
-# specific by design (see has_smoke_test below) - that specificity is the actual value of the
-# job, not incidental scaffolding to generalize away.
+# update-staging-values/smoke-test-staging are the two deliberate exceptions to "fully generic":
+# they stay GitOps-via-inframonitor-gitops and AKS/ArgoCD-specific by design (see
+# has_gitops_deploy and has_smoke_test below) - that specificity is the actual value of those
+# jobs, not incidental scaffolding to generalize away.
 #
 # workflow_call templates cannot declare their own push/pull_request paths: trigger - that stays
 # in each service's thin caller file (events-service-ci.yml / incidents-service-ci.yml).
@@ -30,10 +31,24 @@ on:
         description: "e.g. events-service - also derives WORKING_DIR, image tag, chart file names, WORKFLOW_FILE"
         required: true
         type: string
+      has_gitops_deploy:
+        description: >-
+          Whether to run update-staging-values (writing the new image tag to
+          inframonitor-gitops via yq + git push) after push-image. Like has_smoke_test, this is a
+          skip toggle, not an escape hatch to a different deploy mechanism - a caller not using
+          Helm/GitOps should skip this entirely (false) and bring its own deploy job, rather than
+          expect this one to become generic. When false, smoke-test-staging and
+          rollback-staging are automatically skipped too (they need: update-staging-values /
+          smoke-test-staging, and GitHub's implicit success() gating on needs: does the rest for
+          free - no extra logic required).
+        required: false
+        type: boolean
+        default: true
       chart_path:
-        description: "Chart directory in inframonitor-gitops, e.g. charts/events-service (values-staging.yaml is appended)"
-        required: true
+        description: "Chart directory in inframonitor-gitops, e.g. charts/events-service (values-staging.yaml is appended). Only meaningful when has_gitops_deploy is true."
+        required: false
         type: string
+        default: ''
       image_repository:
         description: "Full ACR repository path, e.g. inframonitoraksacr.azurecr.io/events-service"
         required: true
@@ -443,7 +458,7 @@ jobs:
   update-staging-values:
     name: Update staging image tag (inframonitor-gitops)
     needs: push-image
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: inputs.has_gitops_deploy && github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     outputs:
       image_tag: ${{ needs.push-image.outputs.image_tag }}
