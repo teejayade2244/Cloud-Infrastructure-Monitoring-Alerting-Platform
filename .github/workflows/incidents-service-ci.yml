@@ -16,8 +16,6 @@ on:
 
   workflow_dispatch: {}
 
-# See events-service-ci.yml for why this exists - a job inside a called workflow_call template
-# can only request permissions up to what this calling workflow grants at its own top level.
 permissions:
   contents: read
   security-events: write
@@ -42,9 +40,6 @@ jobs:
       coverage_report_path: Microservices/services/incidents-service.Tests/coverage.cobertura.xml
       codeql_language: csharp
       codeql_paths_ignore: '["Microservices/services/incidents-service/bin", "Microservices/services/incidents-service/obj"]'
-      # Real integration test code now exists - incidents-service.IntegrationTests, against
-      # InfraMonitorTestDB's Incidents container. No Service Bus dependency at all (unlike
-      # events-service), so this blob is deliberately narrower than events-service-ci.yml's.
       has_integration_tests: true
       integration_test_command: dotnet test
       integration_test_working_directory: Microservices/services/incidents-service.IntegrationTests
@@ -58,6 +53,7 @@ jobs:
       aks_cluster_name: inframonitor-aks
       staging_namespace: inframonitor
       smoke_test_script_path: scripts/smoke-test.sh
+      rollback_script_path: scripts/find-rollback-target.sh
     secrets:
       azure_client_id_ci: ${{ secrets.AZURE_CLIENT_ID_INCIDENTS_CI }}
       azure_client_id_cd: ${{ secrets.AZURE_CLIENT_ID_INCIDENTS_CD }}

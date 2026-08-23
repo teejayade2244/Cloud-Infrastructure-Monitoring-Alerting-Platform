@@ -146,6 +146,13 @@ on:
         required: false
         type: string
         default: 'scripts/smoke-test.sh'
+      rollback_script_path:
+        description: >-
+          Path, in your own repository, to the script rollback-staging runs to find the last
+          known-good tag to roll back to.
+        required: false
+        type: string
+        default: 'scripts/find-rollback-target.sh'
     secrets:
       azure_client_id_ci:
         description: "Client ID of the identity used by integration-tests to authenticate to whatever real external systems it depends on."
@@ -513,9 +520,6 @@ jobs:
           EXPECTED_TAG: ${{ needs.update-staging-values.outputs.image_tag }}
           NAMESPACE: ${{ inputs.staging_namespace }}
           ARGOCD_APP_NAME: ${{ inputs.service_name }}-staging
-          # Always explicit (unlike the pre-template events-service-ci.yml, which relied on
-          # smoke-test.sh's own default) - a shared template shouldn't depend on one caller's
-          # value happening to match the script's default.
           SERVICE_NAME: ${{ inputs.service_name }}
         run: ${{ inputs.smoke_test_script_path }}
 
@@ -542,8 +546,6 @@ jobs:
         id: find_target
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # <service_name>-ci.yml is this template's calling workflow's own filename by
-          # convention (both existing caller files follow it) - derived, not a separate input.
           WORKFLOW_FILE: ${{ inputs.service_name }}-ci.yml
           # "call-service-ci / " prefix - see verify-staging-smoke-test.sh's SMOKE_TEST_JOB_NAME
           # comment for why: this is the real, literal job name GitHub Actions reports for a job
@@ -552,14 +554,14 @@ jobs:
           SMOKE_TEST_JOB_NAME: "call-service-ci / Smoke Test (staging)"
           TAG_SOURCE: head_sha
           LOOKBACK_LIMIT: "10"
-        run: scripts/find-rollback-target.sh
+        run: ${{ inputs.rollback_script_path }}
 
       - name: Checkout GitOps repository
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.gitops_repository }}
           token: ${{ secrets.gitops_pat }}
-          path: inframonitor-gitops
+          path: gitops-repo
 
       - name: Install yq
         run: |
@@ -567,11 +569,11 @@ jobs:
           chmod +x /usr/local/bin/yq
 
       - name: Set staging image tag to rollback target
-        working-directory: inframonitor-gitops
+        working-directory: gitops-repo
         run: yq -i '.image.tag = "${{ steps.find_target.outputs.rollback_tag }}"' ${{ inputs.chart_path }}/values-staging.yaml
 
       - name: Commit and push rollback
-        working-directory: inframonitor-gitops
+        working-directory: gitops-repo
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -591,7 +593,7 @@ jobs:
             echo ""
             echo "Smoke test failed for tag \`${{ needs.smoke-test-staging.outputs.image_tag }}\`."
             echo ""
-            echo "Rolled staging back to tag \`${{ steps.find_target.outputs.rollback_tag }}\` - the most recent tag with a genuinely verified staging smoke test (from run [${{ steps.find_target.outputs.rollback_run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ steps.find_target.outputs.rollback_run_id }})). Pushed to inframonitor-gitops."
+            echo "Rolled staging back to tag \`${{ steps.find_target.outputs.rollback_tag }}\` - the most recent tag with a genuinely verified staging smoke test (from run [${{ steps.find_target.outputs.rollback_run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ steps.find_target.outputs.rollback_run_id }})). Pushed to the GitOps repository."
             echo ""
             echo "ArgoCD will sync this automatically, same as any other change - no manual action needed."
           } >> "$GITHUB_STEP_SUMMARY"

@@ -55,6 +55,20 @@ on:
         required: false
         type: string
         default: 'scripts/smoke-test.sh'
+      verify_staging_smoke_test_script_path:
+        description: >-
+          Path, in your own repository, to the script verify-staging-smoke-test runs to confirm
+          this image tag already passed a staging smoke test before promoting it.
+        required: false
+        type: string
+        default: 'scripts/verify-staging-smoke-test.sh'
+      rollback_script_path:
+        description: >-
+          Path, in your own repository, to the script rollback-production runs to find the last
+          known-good tag to roll back to.
+        required: false
+        type: string
+        default: 'scripts/find-rollback-target.sh'
     secrets:
       azure_client_id_smoke:
         description: "Client ID of the identity used by smoke-test-production to authenticate to the Kubernetes cluster and verify the promoted deployment."
@@ -97,10 +111,10 @@ jobs:
           # against it - the job genuinely succeeded, but under a name this script never
           # recognized.
           SMOKE_TEST_JOB_NAME: "call-service-ci / Smoke Test (staging)"
-        run: scripts/verify-staging-smoke-test.sh
+        run: ${{ inputs.verify_staging_smoke_test_script_path }}
 
   promote-to-production:
-    name: Promote to production (inframonitor-gitops)
+    name: Promote to production (GitOps)
     needs: verify-staging-smoke-test
     environment: production
     runs-on: ubuntu-latest
@@ -210,14 +224,14 @@ jobs:
           TAG_SOURCE: artifact
           ARTIFACT_NAME: smoke-test-evidence-production
           LOOKBACK_LIMIT: "10"
-        run: scripts/find-rollback-target.sh
+        run: ${{ inputs.rollback_script_path }}
 
       - name: Checkout GitOps repository
         uses: actions/checkout@v4
         with:
           repository: ${{ inputs.gitops_repository }}
           token: ${{ secrets.gitops_pat }}
-          path: inframonitor-gitops
+          path: gitops-repo
 
       - name: Install yq
         run: |
@@ -225,11 +239,11 @@ jobs:
           chmod +x /usr/local/bin/yq
 
       - name: Set production image tag to rollback target
-        working-directory: inframonitor-gitops
+        working-directory: gitops-repo
         run: yq -i '.image.tag = "${{ steps.find_target.outputs.rollback_tag }}"' ${{ inputs.chart_path }}/values-production.yaml
 
       - name: Commit and push rollback
-        working-directory: inframonitor-gitops
+        working-directory: gitops-repo
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -249,7 +263,7 @@ jobs:
             echo ""
             echo "Smoke test failed for tag \`${{ needs.smoke-test-production.outputs.image_tag }}\`."
             echo ""
-            echo "Rolled production back to tag \`${{ steps.find_target.outputs.rollback_tag }}\` - the most recent tag with a genuinely verified production smoke test (from run [${{ steps.find_target.outputs.rollback_run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ steps.find_target.outputs.rollback_run_id }})). Pushed to inframonitor-gitops."
+            echo "Rolled production back to tag \`${{ steps.find_target.outputs.rollback_tag }}\` - the most recent tag with a genuinely verified production smoke test (from run [${{ steps.find_target.outputs.rollback_run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ steps.find_target.outputs.rollback_run_id }})). Pushed to the GitOps repository."
             echo ""
             echo "ArgoCD will sync this automatically, same as any other change - no manual action needed."
           } >> "$GITHUB_STEP_SUMMARY"
