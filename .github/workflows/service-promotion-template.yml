@@ -20,6 +20,14 @@ on:
         description: "Short SHA image tag to promote - forwarded from the caller's own workflow_dispatch input"
         required: true
         type: string
+      has_smoke_test:
+        description: >-
+          Whether to run smoke-test-production (and its rollback-production safety net) after
+          promotion. Same reasoning as service-ci-template.yml's has_smoke_test - this is a
+          skip toggle, not an escape hatch to a different verification mechanism.
+        required: false
+        type: boolean
+        default: true
     secrets:
       azure_client_id_smoke:
         required: true
@@ -91,6 +99,7 @@ jobs:
   smoke-test-production:
     name: Smoke Test (production)
     needs: promote-to-production
+    if: inputs.has_smoke_test
     runs-on: ubuntu-latest
     permissions:
       id-token: write

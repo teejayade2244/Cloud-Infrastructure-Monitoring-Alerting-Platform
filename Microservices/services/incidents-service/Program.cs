@@ -55,3 +55,9 @@ app.Run();
 // IncidentsController both resolve the Cosmos database name from this single source, instead
 // of each hardcoding (or independently re-reading) it.
 public record CosmosDatabaseOptions(string DatabaseName);
+
+// Top-level statements generate an internal Program class by default, invisible to another
+// assembly - this partial declaration makes it public so incidents-service.IntegrationTests can
+// reference WebApplicationFactory<Program> and boot the real app (real DI wiring, real
+// CosmosClient construction) against test infrastructure, not a hand-rolled substitute host.
+public partial class Program { }

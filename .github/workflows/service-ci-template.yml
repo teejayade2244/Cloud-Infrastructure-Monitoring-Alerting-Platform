@@ -1,9 +1,25 @@
 name: service CI template
 
-# Reusable CI pipeline shared by events-service (node) and incidents-service (dotnet). Per the
-# comparison in docs/reusable-workflow-analysis.md: 6 of 10 jobs are clean Category A
-# (parameter-only), 3 are A-shaped with a narrow language-specific interior
-# (lint-and-format/unit-tests/sast), and unit-tests alone is genuinely language-forced end to end.
+# Reusable CI pipeline. Per the comparison in docs/reusable-workflow-analysis.md: 6 of 10 jobs
+# are clean Category A (parameter-only) and never touch source code at all - dependency-scan,
+# build-image, container-scan, update-staging-values, smoke-test-staging, rollback-staging. The
+# other four (lint-and-format, unit-tests, sast, integration-tests) are where a caller's own
+# toolchain shows up - deliberately made fully language-agnostic via a caller-supplied
+# build_container_image plus caller-supplied commands (lint_command/test_command/etc.), not a
+# fixed node/dotnet branch pair - so any team can adopt this regardless of language and fine-tune
+# it to their own application, without ever editing this shared file.
+#
+# build_container_image, not a dynamic setup action, is deliberate: a step's `uses:` cannot
+# reference the inputs context at all ("context 'inputs' is not allowed here" - confirmed via
+# actionlint, a real GitHub Actions constraint, not a style choice) - there is no way to pick
+# actions/setup-node@v4 vs actions/setup-dotnet@v4 by an expression. Running the job inside
+# whatever container image already has the caller's toolchain installed sidesteps that
+# limitation entirely, and is the standard pattern for language-agnostic reusable workflows.
+#
+# smoke-test-staging is the one deliberate exception to "fully generic": it stays AKS/ArgoCD-
+# specific by design (see has_smoke_test below) - that specificity is the actual value of the
+# job, not incidental scaffolding to generalize away.
+#
 # workflow_call templates cannot declare their own push/pull_request paths: trigger - that stays
 # in each service's thin caller file (events-service-ci.yml / incidents-service-ci.yml).
 
@@ -14,10 +30,6 @@ on:
         description: "e.g. events-service - also derives WORKING_DIR, image tag, chart file names, WORKFLOW_FILE"
         required: true
         type: string
-      language:
-        description: "'node' or 'dotnet' - gates the interior of lint-and-format, unit-tests, and sast only"
-        required: true
-        type: string
       chart_path:
         description: "Chart directory in inframonitor-gitops, e.g. charts/events-service (values-staging.yaml is appended)"
         required: true
@@ -26,10 +38,65 @@ on:
         description: "Full ACR repository path, e.g. inframonitoraksacr.azurecr.io/events-service"
         required: true
         type: string
+      build_container_image:
+        description: >-
+          The container image lint-and-format, unit-tests, sast, and integration-tests all run
+          inside - whatever already has this app's toolchain installed, e.g. node:20,
+          mcr.microsoft.com/dotnet/sdk:10.0, golang:1.23. This template never hardcodes a
+          language; GitHub Actions injects Node.js into any container automatically, so
+          JS-based actions used inside these jobs (checkout, azure/login, upload-artifact, the
+          CodeQL actions) work regardless of the image's own base.
+        required: true
+        type: string
+      install_command:
+        description: "e.g. npm ci, or empty for a language with no separate install step (dotnet restore runs implicitly). Runs once, in the service's own working directory, before lint_command/test_command."
+        required: false
+        type: string
+        default: ''
+      lint_command:
+        description: "e.g. 'npm run lint && npm run format:check', or 'dotnet format --verify-no-changes'. Runs in the service's own working directory."
+        required: true
+        type: string
+      test_command:
+        description: "e.g. npm run test:coverage, or a dotnet test invocation with coverage flags."
+        required: true
+        type: string
+      unit_test_working_directory:
+        description: "Override if the test project is a sibling directory rather than the service's own (e.g. incidents-service.Tests). Defaults to the service's own working directory."
+        required: false
+        type: string
+        default: ''
+      coverage_report_path:
+        description: "Path (relative to repo root) to upload as the coverage-report artifact - a file or a directory, whatever the caller's own tooling produces."
+        required: true
+        type: string
+      codeql_language:
+        description: "CodeQL's own language identifier, e.g. javascript, csharp, go, python."
+        required: true
+        type: string
+      codeql_paths_ignore:
+        description: >-
+          JSON array of FULL paths (already prefixed with the service's own working directory) to
+          exclude from CodeQL, e.g. '["Microservices/services/events-service/node_modules"]'.
+          JSON array syntax is valid YAML flow-sequence syntax, so this is spliced directly into
+          CodeQL's own config: block - no fromJSON() needed.
+        required: false
+        type: string
+        default: '[]'
       has_integration_tests:
-        description: "Whether real integration-test code exists for this service yet (events-service: true, incidents-service: false until its dotnet integration tests are written)"
+        description: "Whether real integration-test code exists for this service yet."
         required: true
         type: boolean
+      integration_test_command:
+        description: "e.g. npm run test:integration, or dotnet test. Only used when has_integration_tests is true."
+        required: false
+        type: string
+        default: ''
+      integration_test_working_directory:
+        description: "Override if integration tests live in a separate project/directory from unit tests (e.g. incidents-service.IntegrationTests, a sibling of incidents-service.Tests, not the same directory). Defaults to the service's own working directory."
+        required: false
+        type: string
+        default: ''
       integration_test_vars:
         description: >-
           JSON object of non-secret env vars for the integration-tests job, e.g.
@@ -40,6 +107,17 @@ on:
         required: false
         type: string
         default: '{}'
+      has_smoke_test:
+        description: >-
+          Whether to run smoke-test-staging (and its rollback-staging safety net) after deploy.
+          Unlike the inputs above, this is deliberately NOT an escape hatch to a different
+          verification mechanism - smoke-test-staging is AKS/ArgoCD-specific by design (that
+          specificity is the actual value of the job, not incidental scaffolding around it). A
+          caller not on this cluster should skip it entirely (false) and bring its own deploy +
+          verify job, rather than expect this one to become generic.
+        required: false
+        type: boolean
+        default: true
     secrets:
       azure_client_id_ci:
         required: true
@@ -62,105 +140,57 @@ jobs:
   lint-and-format:
     name: Lint & Format Check
     runs-on: ubuntu-latest
+    container: ${{ inputs.build_container_image }}
+    defaults:
+      run:
+        working-directory: Microservices/services/${{ inputs.service_name }}
     steps:
       - uses: actions/checkout@v4
 
-      # --- node branch ---
-      - uses: actions/setup-node@v4
-        if: inputs.language == 'node'
-        with:
-          node-version: '20'
-          cache: npm
-          cache-dependency-path: Microservices/services/${{ inputs.service_name }}/package-lock.json
+      - name: Install dependencies
+        if: inputs.install_command != ''
+        run: ${{ inputs.install_command }}
 
-      - name: npm ci
-        if: inputs.language == 'node'
-        working-directory: Microservices/services/${{ inputs.service_name }}
-        run: npm ci
-
-      - name: npm run lint
-        if: inputs.language == 'node'
-        working-directory: Microservices/services/${{ inputs.service_name }}
-        run: npm run lint
-
-      - name: npm run format:check
-        if: inputs.language == 'node'
-        working-directory: Microservices/services/${{ inputs.service_name }}
-        run: npm run format:check
-
-      # --- dotnet branch ---
-      - uses: actions/setup-dotnet@v4
-        if: inputs.language == 'dotnet'
-        with:
-          dotnet-version: '10.0.x'
-
-      - name: dotnet format --verify-no-changes
-        if: inputs.language == 'dotnet'
-        working-directory: Microservices/services/${{ inputs.service_name }}
-        run: dotnet format --verify-no-changes
+      - name: Lint
+        run: ${{ inputs.lint_command }}
 
   unit-tests:
     name: Unit Tests & Coverage
     runs-on: ubuntu-latest
+    container: ${{ inputs.build_container_image }}
     steps:
       - uses: actions/checkout@v4
 
-      # --- node branch ---
-      - uses: actions/setup-node@v4
-        if: inputs.language == 'node'
-        with:
-          node-version: '20'
-          cache: npm
-          cache-dependency-path: Microservices/services/${{ inputs.service_name }}/package-lock.json
-
-      - name: npm ci
-        if: inputs.language == 'node'
+      - name: Install dependencies
+        if: inputs.install_command != ''
         working-directory: Microservices/services/${{ inputs.service_name }}
-        run: npm ci
+        run: ${{ inputs.install_command }}
 
-      - name: npm run test:coverage
-        if: inputs.language == 'node'
-        working-directory: Microservices/services/${{ inputs.service_name }}
-        run: npm run test:coverage
+      # No job-level defaults.run.working-directory - unit_test_working_directory may be a
+      # sibling of the service's own directory (confirmed against incidents-service.Tests's real
+      # layout), not nested inside it, so every step that needs a directory is explicit instead.
+      - name: Run tests
+        working-directory: ${{ inputs.unit_test_working_directory != '' && inputs.unit_test_working_directory || format('Microservices/services/{0}', inputs.service_name) }}
+        run: ${{ inputs.test_command }}
 
-      - name: Upload coverage report (node)
-        if: always() && inputs.language == 'node'
+      - name: Upload coverage report
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
-          path: Microservices/services/${{ inputs.service_name }}/coverage/
-          retention-days: 14
-
-      # --- dotnet branch --- (test project is a SIBLING of WORKING_DIR, not nested inside it -
-      # confirmed against incidents-service.Tests's real layout - so no job-level
-      # defaults.run.working-directory here; every step is explicit instead)
-      - uses: actions/setup-dotnet@v4
-        if: inputs.language == 'dotnet'
-        with:
-          dotnet-version: '10.0.x'
-
-      - name: Run tests with coverage
-        if: inputs.language == 'dotnet'
-        working-directory: Microservices/services/${{ inputs.service_name }}.Tests
-        run: dotnet test /p:CollectCoverage=true /p:CoverletOutputFormat=cobertura /p:Threshold=70 /p:ThresholdType=line /p:ThresholdStat=total
-
-      - name: Upload coverage report (dotnet)
-        if: always() && inputs.language == 'dotnet'
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-report
-          path: Microservices/services/${{ inputs.service_name }}.Tests/coverage.cobertura.xml
+          path: ${{ inputs.coverage_report_path }}
           retention-days: 14
 
   dependency-scan:
-    name: Dependency Scan (${{ inputs.language == 'node' && 'package-lock.json' || 'packages.lock.json' }})
+    name: Dependency Scan
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      # Filesystem-mode scan of the lockfile directly, before any build happens - distinct from
-      # container-scan, which checks the built image (OS packages + app deps together) after a
-      # full Docker build.
+      # Filesystem-mode scan of the service's own directory, before any build happens - distinct
+      # from container-scan, which checks the built image (OS packages + app deps together)
+      # after a full Docker build. Trivy auto-detects whatever lockfile format it finds
+      # (package-lock.json, packages.lock.json, go.sum, etc.) - no language input needed here.
       - name: Run Trivy dependency scan
         uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
         with:
@@ -185,42 +215,26 @@ jobs:
     needs: [lint-and-format, unit-tests]
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    # Same build_container_image as lint-and-format/unit-tests, unconditionally - CodeQL's own
+    # actions are JS-based and GitHub Actions injects Node.js into any container to run them, so
+    # this doesn't need a language-specific toggle the way a bare-runner setup step once did (a
+    # compiled language's autobuild needing its SDK present is exactly what the image already
+    # provides; an interpreted language's autobuild is a no-op regardless of the image).
+    container: ${{ inputs.build_container_image }}
     permissions:
       contents: read
       security-events: write
     steps:
       - uses: actions/checkout@v4
 
-      # C#'s autobuild needs an SDK present to actually compile - unlike JS's near-no-op
-      # autobuild, this step is genuinely required for dotnet and genuinely absent for node.
-      - uses: actions/setup-dotnet@v4
-        if: inputs.language == 'dotnet'
-        with:
-          dotnet-version: '10.0.x'
-
-      - name: Initialize CodeQL (node)
-        if: inputs.language == 'node'
+      - name: Initialize CodeQL
         uses: github/codeql-action/init@v3.37.7
         with:
-          languages: javascript
+          languages: ${{ inputs.codeql_language }}
           config: |
             paths:
               - Microservices/services/${{ inputs.service_name }}
-            paths-ignore:
-              - Microservices/services/${{ inputs.service_name }}/node_modules
-              - Microservices/services/${{ inputs.service_name }}/coverage
-
-      - name: Initialize CodeQL (dotnet)
-        if: inputs.language == 'dotnet'
-        uses: github/codeql-action/init@v3.37.7
-        with:
-          languages: csharp
-          config: |
-            paths:
-              - Microservices/services/${{ inputs.service_name }}
-            paths-ignore:
-              - Microservices/services/${{ inputs.service_name }}/bin
-              - Microservices/services/${{ inputs.service_name }}/obj
+            paths-ignore: ${{ inputs.codeql_paths_ignore }}
 
       - uses: github/codeql-action/autobuild@v3.37.7
 
@@ -257,35 +271,23 @@ jobs:
 
   # Always defined (workflow_call templates have a static job graph - a caller can't make a job
   # disappear), gated by has_integration_tests so it genuinely skips, not silently no-ops, for a
-  # service without integration test code yet. Node-only branch below because that's the one real
-  # implementation that exists (events-service's) - a dotnet branch, gated the same way
-  # lint-and-format/unit-tests/sast already are, gets added if/when incidents-service's deferred
-  # dotnet integration tests get written; not fabricated ahead of real test code existing.
+  # service without integration test code yet.
   integration-tests:
     name: Integration Tests
     needs: [lint-and-format, unit-tests]
     if: inputs.has_integration_tests && (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
     runs-on: ubuntu-latest
+    container: ${{ inputs.build_container_image }}
     permissions:
       id-token: write
       contents: read
-    defaults:
-      run:
-        working-directory: Microservices/services/${{ inputs.service_name }}
     steps:
       - uses: actions/checkout@v4
 
-      # --- node branch (the only one that exists today) ---
-      - uses: actions/setup-node@v4
-        if: inputs.language == 'node'
-        with:
-          node-version: '20'
-          cache: npm
-          cache-dependency-path: Microservices/services/${{ inputs.service_name }}/package-lock.json
-
-      - name: npm ci
-        if: inputs.language == 'node'
-        run: npm ci
+      - name: Install dependencies
+        if: inputs.install_command != ''
+        working-directory: Microservices/services/${{ inputs.service_name }}
+        run: ${{ inputs.install_command }}
 
       - uses: azure/login@v2
         with:
@@ -297,18 +299,18 @@ jobs:
       # a literal key (AZURE_CLIENT_ID) with the fromJSON-expanded blob below in one env: block,
       # since GitHub Actions expressions have no object-spread operator. Exporting it to
       # $GITHUB_ENV here instead makes it part of the job's own environment for every subsequent
-      # step, AZURE_CLIENT_ID is a real secret so it stays its own named, explicit secrets: input
-      # (documented, required) rather than folded into the opaque integration_test_vars blob.
+      # step - AZURE_CLIENT_ID is a real secret so it stays its own named, explicit secrets:
+      # input (documented, required) rather than folded into the opaque integration_test_vars blob.
       - name: Export AZURE_CLIENT_ID
-        if: inputs.language == 'node'
         run: echo "AZURE_CLIENT_ID=${{ secrets.azure_client_id_ci }}" >> "$GITHUB_ENV"
 
       # integration_test_vars is an opaque JSON blob (see the input description) - this template
       # never needs to know what a caller's integration tests actually depend on. A caller whose
-      # app doesn't use Cosmos DB/Service Bus at all just supplies a different map.
-      - name: npm run test:integration
-        if: inputs.language == 'node'
-        run: npm run test:integration 2>&1 | tee test-results.txt
+      # app doesn't use Cosmos DB/Service Bus at all just supplies a different map (incidents-service's
+      # only needs COSMOS_ENDPOINT/COSMOS_TEST_DATABASE - it has no Service Bus dependency at all).
+      - name: Run integration tests
+        working-directory: ${{ inputs.integration_test_working_directory != '' && inputs.integration_test_working_directory || format('Microservices/services/{0}', inputs.service_name) }}
+        run: ${{ inputs.integration_test_command }} 2>&1 | tee test-results.txt
         env: ${{ fromJSON(inputs.integration_test_vars) }}
 
       - name: Upload integration test results
@@ -316,7 +318,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: integration-test-results
-          path: Microservices/services/${{ inputs.service_name }}/test-results.txt
+          path: ${{ inputs.integration_test_working_directory != '' && inputs.integration_test_working_directory || format('Microservices/services/{0}', inputs.service_name) }}/test-results.txt
           retention-days: 14
 
   container-scan:
@@ -449,7 +451,7 @@ jobs:
   smoke-test-staging:
     name: Smoke Test (staging)
     needs: update-staging-values
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: inputs.has_smoke_test && github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -501,6 +503,9 @@ jobs:
     # silently ANDs an implicit success() onto any job's if: condition unless it already contains
     # one of the status-check functions - a real, previously-fixed bug in this project. Applied
     # correctly from the start in this template, not something to rediscover during the refactor.
+    # (Also correctly handles has_smoke_test: false for free - a SKIPPED smoke-test-staging has
+    # result 'skipped', not 'failure', so this condition stays false and rollback stays skipped
+    # too, no extra logic needed.)
     if: failure() && needs.smoke-test-staging.result == 'failure'
     runs-on: ubuntu-latest
     permissions:

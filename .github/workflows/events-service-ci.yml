@@ -28,10 +28,17 @@ jobs:
     uses: ./.github/workflows/service-ci-template.yml
     with:
       service_name: events-service
-      language: node
       chart_path: charts/events-service
       image_repository: inframonitoraksacr.azurecr.io/events-service
+      build_container_image: node:20
+      install_command: npm ci
+      lint_command: npm run lint && npm run format:check
+      test_command: npm run test:coverage
+      coverage_report_path: Microservices/services/events-service/coverage/
+      codeql_language: javascript
+      codeql_paths_ignore: '["Microservices/services/events-service/node_modules", "Microservices/services/events-service/coverage"]'
       has_integration_tests: true
+      integration_test_command: npm run test:integration
       integration_test_vars: |
         {
           "COSMOS_ENDPOINT": "${{ vars.COSMOS_ENDPOINT }}",
@@ -40,6 +47,7 @@ jobs:
           "SERVICEBUS_TEST_TOPIC": "${{ vars.SERVICEBUS_TEST_TOPIC }}",
           "SERVICEBUS_TEST_SUBSCRIPTION": "${{ vars.SERVICEBUS_TEST_SUBSCRIPTION }}"
         }
+      has_smoke_test: true
     secrets:
       azure_client_id_ci: ${{ secrets.AZURE_CLIENT_ID_EVENTS_CI }}
       azure_client_id_cd: ${{ secrets.AZURE_CLIENT_ID_EVENTS_CD }}
