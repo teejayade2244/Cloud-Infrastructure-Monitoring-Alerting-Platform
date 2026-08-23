@@ -1,0 +1,220 @@
+name: service production promotion template
+
+# Reusable production-promotion pipeline for any service using this org's Kubernetes + GitOps
+# deployment pattern. Every job here operates on an already-built artifact, Git, and Kubernetes -
+# none of them touch source code, so unlike the CI template there's no language input and no
+# per-caller branching anywhere in this file. Every caller uses this template identically; only
+# the values (service name, chart path, tag) differ.
+
+on:
+  workflow_call:
+    inputs:
+      service_name:
+        description: "A short identifier for this service, e.g. my-service. Used to derive the deployment's name, the naming convention for the caller's own CI workflow file, and commit messages."
+        required: true
+        type: string
+      chart_path:
+        description: "Chart directory in your GitOps repository, e.g. charts/my-service (values-production.yaml is appended)"
+        required: true
+        type: string
+      image_tag:
+        description: "The already-built image tag to promote - forwarded from the caller's own workflow_dispatch input"
+        required: true
+        type: string
+      has_smoke_test:
+        description: >-
+          Whether to run smoke-test-production (and its rollback-production safety net) after
+          promotion. Same reasoning as the CI template's has_smoke_test - this is a skip toggle,
+          not an escape hatch to a different verification mechanism.
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      azure_client_id_smoke:
+        description: "Client ID of the identity used by smoke-test-production to authenticate to the Kubernetes cluster and verify the promoted deployment."
+        required: true
+      gitops_pat:
+        description: "Token with write access to the GitOps repository, used to commit the promoted (and, on rollback, a prior) image tag."
+        required: true
+      azure_tenant_id:
+        description: "Tenant ID for the identity above."
+        required: true
+      azure_subscription_id:
+        description: "Subscription ID for the identity above."
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify-staging-smoke-test:
+    name: Verify staging smoke test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify image tag has a successful staging smoke test
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          IMAGE_TAG: ${{ inputs.image_tag }}
+          # <service_name>-ci.yml by the same naming convention service-ci-template.yml's
+          # rollback-staging job already relies on.
+          WORKFLOW_FILE: ${{ inputs.service_name }}-ci.yml
+        run: scripts/verify-staging-smoke-test.sh
+
+  promote-to-production:
+    name: Promote to production (inframonitor-gitops)
+    needs: verify-staging-smoke-test
+    environment: production
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      image_tag: ${{ inputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: teejayade2244/inframonitor-gitops
+          token: ${{ secrets.gitops_pat }}
+
+      - name: Install yq
+        run: |
+          curl -sL -o /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_amd64
+          chmod +x /usr/local/bin/yq
+
+      - name: Set production image tag
+        run: yq -i '.image.tag = "${{ inputs.image_tag }}"' ${{ inputs.chart_path }}/values-production.yaml
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add ${{ inputs.chart_path }}/values-production.yaml
+          git commit -m "deploy(production): promote ${{ inputs.service_name }} to ${{ inputs.image_tag }}
+
+          PRODUCTION PROMOTION
+          Image tag: ${{ inputs.image_tag }}
+          Triggered by: @${{ github.actor }}
+          Verified via: Smoke Test (staging), ${{ inputs.service_name }}-ci.yml"
+          git push
+
+  smoke-test-production:
+    name: Smoke Test (production)
+    needs: promote-to-production
+    if: inputs.has_smoke_test
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      image_tag: ${{ needs.promote-to-production.outputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.azure_client_id_smoke }}
+          tenant-id: ${{ secrets.azure_tenant_id }}
+          subscription-id: ${{ secrets.azure_subscription_id }}
+
+      - name: Install kubectl + kubelogin
+        run: sudo az aks install-cli
+
+      - name: Get AKS credentials
+        run: az aks get-credentials --resource-group inframonitor-aks-rg --name inframonitor-aks --overwrite-existing
+
+      - name: Convert kubeconfig for azurecli auth
+        run: kubelogin convert-kubeconfig -l azurecli
+
+      - name: Run production smoke test
+        id: smoke_test
+        env:
+          EXPECTED_TAG: ${{ needs.promote-to-production.outputs.image_tag }}
+          NAMESPACE: inframonitor-production
+          ARGOCD_APP_NAME: ${{ inputs.service_name }}-production
+          ENVIRONMENT_LABEL: production
+          SERVICE_NAME: ${{ inputs.service_name }}
+        run: scripts/smoke-test.sh
+
+      - name: Upload smoke test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-test-evidence-production
+          path: smoke-test-evidence/
+          retention-days: 14
+
+  rollback-production:
+    name: Rollback production (automatic)
+    needs: smoke-test-production
+    # failure() is required here, not just the needs.*.result check alone - same, previously-fixed
+    # bug in this project's history: GitHub Actions silently ANDs an implicit success() onto any
+    # job's if: condition unless it already contains a status-check function. Applied correctly
+    # from the start in this template.
+    if: failure() && needs.smoke-test-production.result == 'failure'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find rollback target
+        id: find_target
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WORKFLOW_FILE: ${{ inputs.service_name }}-production-promotion.yml
+          SMOKE_TEST_JOB_NAME: "Smoke Test (production)"
+          # Production runs are workflow_dispatch-triggered - no head_sha-to-tag correspondence
+          # the way staging has (GitHub's Actions API exposes no input-value field at all for a
+          # completed run). The smoke-test-evidence-production artifact Smoke Test (production)
+          # already uploads is the only reliable record of which tag a given run actually tested.
+          TAG_SOURCE: artifact
+          ARTIFACT_NAME: smoke-test-evidence-production
+          LOOKBACK_LIMIT: "10"
+        run: scripts/find-rollback-target.sh
+
+      - name: Checkout inframonitor-gitops
+        uses: actions/checkout@v4
+        with:
+          repository: teejayade2244/inframonitor-gitops
+          token: ${{ secrets.gitops_pat }}
+          path: inframonitor-gitops
+
+      - name: Install yq
+        run: |
+          curl -sL -o /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_amd64
+          chmod +x /usr/local/bin/yq
+
+      - name: Set production image tag to rollback target
+        working-directory: inframonitor-gitops
+        run: yq -i '.image.tag = "${{ steps.find_target.outputs.rollback_tag }}"' ${{ inputs.chart_path }}/values-production.yaml
+
+      - name: Commit and push rollback
+        working-directory: inframonitor-gitops
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add ${{ inputs.chart_path }}/values-production.yaml
+          git commit -m "rollback(production): automatic rollback to ${{ steps.find_target.outputs.rollback_tag }}
+
+          AUTOMATIC ROLLBACK - triggered by a failed production smoke test
+          Rolled back FROM: ${{ needs.smoke-test-production.outputs.image_tag }}
+          Rolled back TO (last verified-good in production): ${{ steps.find_target.outputs.rollback_tag }}
+          Failed run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          git push
+
+      - name: Report rollback
+        run: |
+          {
+            echo "## Automatic production rollback"
+            echo ""
+            echo "Smoke test failed for tag \`${{ needs.smoke-test-production.outputs.image_tag }}\`."
+            echo ""
+            echo "Rolled production back to tag \`${{ steps.find_target.outputs.rollback_tag }}\` - the most recent tag with a genuinely verified production smoke test (from run [${{ steps.find_target.outputs.rollback_run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ steps.find_target.outputs.rollback_run_id }})). Pushed to inframonitor-gitops."
+            echo ""
+            echo "ArgoCD will sync this automatically, same as any other change - no manual action needed."
+          } >> "$GITHUB_STEP_SUMMARY"
