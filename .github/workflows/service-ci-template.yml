@@ -1,78 +1,76 @@
 name: service CI template
 
-# Reusable CI pipeline. Per the comparison in docs/reusable-workflow-analysis.md: 6 of 10 jobs
-# are clean Category A (parameter-only) and never touch source code at all - dependency-scan,
-# build-image, container-scan, update-staging-values, smoke-test-staging, rollback-staging. The
-# other four (lint-and-format, unit-tests, sast, integration-tests) are where a caller's own
-# toolchain shows up - deliberately made fully language-agnostic via a caller-supplied
-# build_container_image plus caller-supplied commands (lint_command/test_command/etc.), not a
-# fixed node/dotnet branch pair - so any team can adopt this regardless of language and fine-tune
-# it to their own application, without ever editing this shared file.
+# Reusable CI pipeline for any service in any language. About two-thirds of the jobs
+# (dependency-scan, build-image, container-scan, and - where used - the deploy/verify jobs) never
+# touch source code at all, so they're identical regardless of the caller's tech stack. The jobs
+# that do touch source code (lint-and-format, unit-tests, sast, integration-tests) are
+# language-agnostic by construction: the caller supplies a container image with its own toolchain
+# already installed (build_container_image) plus the actual commands to run
+# (lint_command/test_command/etc.), so adopting this template never means editing this shared
+# file - only supplying inputs.
 #
 # build_container_image, not a dynamic setup action, is deliberate: a step's `uses:` cannot
-# reference the inputs context at all ("context 'inputs' is not allowed here" - confirmed via
-# actionlint, a real GitHub Actions constraint, not a style choice) - there is no way to pick
-# actions/setup-node@v4 vs actions/setup-dotnet@v4 by an expression. Running the job inside
-# whatever container image already has the caller's toolchain installed sidesteps that
-# limitation entirely, and is the standard pattern for language-agnostic reusable workflows.
+# reference the inputs context at all (a real GitHub Actions constraint, not a style choice) -
+# there's no way to pick one language's setup action over another's by expression. Running the
+# job inside a container that already has the right toolchain sidesteps that limitation entirely,
+# and is the standard pattern for language-agnostic reusable workflows.
 #
-# update-staging-values/smoke-test-staging are the two deliberate exceptions to "fully generic":
-# they stay GitOps-via-inframonitor-gitops and AKS/ArgoCD-specific by design (see
-# has_gitops_deploy and has_smoke_test below) - that specificity is the actual value of those
-# jobs, not incidental scaffolding to generalize away.
+# update-staging-values/smoke-test-staging are the deliberate exceptions to "fully generic": they
+# assume a specific GitOps + Kubernetes deployment mechanism (see has_gitops_deploy and
+# has_smoke_test below) - that specificity is the actual value of those jobs, not incidental
+# scaffolding to generalize away. A caller with a different deployment target skips them (false)
+# and brings its own deploy/verify job instead of expecting these to become generic too.
 #
 # workflow_call templates cannot declare their own push/pull_request paths: trigger - that stays
-# in each service's thin caller file (events-service-ci.yml / incidents-service-ci.yml).
+# in each service's own thin caller workflow file.
 
 on:
   workflow_call:
     inputs:
       service_name:
-        description: "e.g. events-service - used for image tags, artifact filenames, ARGOCD_APP_NAME, and (by convention) WORKFLOW_FILE = <service_name>-ci.yml. Not used to derive a source path - see working_directory."
+        description: "A short identifier for this service, e.g. my-service. Used for image tags, artifact filenames, and naming conventions elsewhere in the pipeline - not used to derive a source path (see working_directory)."
         required: true
         type: string
       working_directory:
         description: >-
-          Full path to the service's own source directory, e.g. Microservices/services/events-service.
-          A caller with a different monorepo layout (services/<name>, apps/<name>, or a
-          single-service repo's own root) just supplies that path - this template never assumes
-          a Microservices/services/ prefix or any other directory convention.
+          Full path to this service's own source directory, e.g. services/my-service or
+          apps/my-service, or "." for a single-service repository. This template makes no
+          assumption about repository layout - whatever path you supply is used as-is.
         required: true
         type: string
       has_gitops_deploy:
         description: >-
-          Whether to run update-staging-values (writing the new image tag to
-          inframonitor-gitops via yq + git push) after push-image. Like has_smoke_test, this is a
-          skip toggle, not an escape hatch to a different deploy mechanism - a caller not using
-          Helm/GitOps should skip this entirely (false) and bring its own deploy job, rather than
-          expect this one to become generic. When false, smoke-test-staging and
-          rollback-staging are automatically skipped too (they need: update-staging-values /
-          smoke-test-staging, and GitHub's implicit success() gating on needs: does the rest for
-          free - no extra logic required).
+          Whether to run update-staging-values (writing the new image tag to your GitOps
+          repository via a Helm values file edit + git push) after the image is built and pushed.
+          This is a skip toggle, not an escape hatch to a different deploy mechanism - a caller
+          not using Helm/GitOps should skip this entirely (false) and bring its own deploy job.
+          When false, smoke-test-staging and rollback-staging are automatically skipped too
+          (they depend on update-staging-values / smoke-test-staging, and GitHub's own gating on
+          needs: does the rest for free).
         required: false
         type: boolean
         default: true
       chart_path:
-        description: "Chart directory in inframonitor-gitops, e.g. charts/events-service (values-staging.yaml is appended). Only meaningful when has_gitops_deploy is true."
+        description: "Chart directory in your GitOps repository, e.g. charts/my-service (values-staging.yaml is appended). Only meaningful when has_gitops_deploy is true."
         required: false
         type: string
         default: ''
       image_repository:
-        description: "Full ACR repository path, e.g. inframonitoraksacr.azurecr.io/events-service"
+        description: "Full container registry repository path for this service's image, e.g. myregistry.azurecr.io/my-service."
         required: true
         type: string
       build_container_image:
         description: >-
           The container image lint-and-format, unit-tests, sast, and integration-tests all run
           inside - whatever already has this app's toolchain installed, e.g. node:20,
-          mcr.microsoft.com/dotnet/sdk:10.0, golang:1.23. This template never hardcodes a
-          language; GitHub Actions injects Node.js into any container automatically, so
-          JS-based actions used inside these jobs (checkout, azure/login, upload-artifact, the
+          mcr.microsoft.com/dotnet/sdk:10.0, golang:1.23, python:3.12. This template never
+          hardcodes a language; GitHub Actions injects Node.js into any container automatically,
+          so the JS-based actions used inside these jobs (checkout, login, upload-artifact, the
           CodeQL actions) work regardless of the image's own base.
         required: true
         type: string
       install_command:
-        description: "e.g. npm ci, or empty for a language with no separate install step (dotnet restore runs implicitly). Runs once, in the service's own working directory, before lint_command/test_command."
+        description: "e.g. npm ci, or empty for a toolchain with no separate install step. Runs once, in the service's own working directory, before lint_command/test_command."
         required: false
         type: string
         default: ''
@@ -81,11 +79,11 @@ on:
         required: true
         type: string
       test_command:
-        description: "e.g. npm run test:coverage, or a dotnet test invocation with coverage flags."
+        description: "e.g. npm run test:coverage, or a test-runner invocation with coverage flags."
         required: true
         type: string
       unit_test_working_directory:
-        description: "Override if the test project is a sibling directory rather than the service's own (e.g. incidents-service.Tests). Defaults to the service's own working directory."
+        description: "Override if the test project is a sibling directory rather than the service's own (e.g. a separate test project directory). Defaults to working_directory."
         required: false
         type: string
         default: ''
@@ -99,10 +97,10 @@ on:
         type: string
       codeql_paths_ignore:
         description: >-
-          JSON array of FULL paths (already prefixed with the service's own working directory) to
-          exclude from CodeQL, e.g. '["Microservices/services/events-service/node_modules"]'.
-          JSON array syntax is valid YAML flow-sequence syntax, so this is spliced directly into
-          CodeQL's own config: block - no fromJSON() needed.
+          JSON array of FULL paths (already prefixed with working_directory) to exclude from
+          CodeQL, e.g. '["services/my-service/node_modules"]'. JSON array syntax is valid YAML
+          flow-sequence syntax, so this is spliced directly into CodeQL's own config: block - no
+          fromJSON() needed.
         required: false
         type: string
         default: '[]'
@@ -111,22 +109,22 @@ on:
         required: true
         type: boolean
       integration_test_command:
-        description: "e.g. npm run test:integration, or dotnet test. Only used when has_integration_tests is true."
+        description: "e.g. npm run test:integration, or a test-runner invocation targeting integration tests specifically. Only used when has_integration_tests is true."
         required: false
         type: string
         default: ''
       integration_test_working_directory:
-        description: "Override if integration tests live in a separate project/directory from unit tests (e.g. incidents-service.IntegrationTests, a sibling of incidents-service.Tests, not the same directory). Defaults to the service's own working directory."
+        description: "Override if integration tests live in a separate project/directory from unit tests. Defaults to working_directory."
         required: false
         type: string
         default: ''
       integration_test_vars:
         description: >-
-          JSON object of non-secret env vars for the integration-tests job, e.g.
-          '{"COSMOS_ENDPOINT": "...", "COSMOS_TEST_DATABASE": "..."}'. Deliberately opaque to this
-          template - a caller whose app doesn't use Cosmos DB/Service Bus at all just supplies a
-          different map (or omits this and gets an empty one). AZURE_CLIENT_ID is NOT part of
-          this blob - it's a real secret and stays its own named, explicit secrets: input below.
+          JSON object of non-secret env vars the integration-tests job needs, e.g.
+          '{"API_BASE_URL": "...", "TEST_DATABASE_NAME": "..."}'. Deliberately opaque to this
+          template - it never needs to know what a caller's integration tests actually depend on;
+          a caller with no such dependencies just omits this and gets an empty map. Any real
+          credential belongs in its own named secrets: input instead, never in this blob.
         required: false
         type: string
         default: '{}'
@@ -134,25 +132,31 @@ on:
         description: >-
           Whether to run smoke-test-staging (and its rollback-staging safety net) after deploy.
           Unlike the inputs above, this is deliberately NOT an escape hatch to a different
-          verification mechanism - smoke-test-staging is AKS/ArgoCD-specific by design (that
-          specificity is the actual value of the job, not incidental scaffolding around it). A
-          caller not on this cluster should skip it entirely (false) and bring its own deploy +
-          verify job, rather than expect this one to become generic.
+          verification mechanism - smoke-test-staging assumes a specific Kubernetes + GitOps
+          deployment target (that specificity is the actual value of the job, not incidental
+          scaffolding around it). A caller with a different deployment target should skip it
+          entirely (false) and bring its own deploy + verify job.
         required: false
         type: boolean
         default: true
     secrets:
       azure_client_id_ci:
+        description: "Client ID of the identity used by integration-tests to authenticate to whatever real external systems it depends on."
         required: true
       azure_client_id_cd:
+        description: "Client ID of the identity used by push-image to authenticate to the container registry."
         required: true
       azure_client_id_smoke:
+        description: "Client ID of the identity used by smoke-test-staging to authenticate to the Kubernetes cluster and verify the deployment."
         required: true
       gitops_pat:
+        description: "Token with write access to the GitOps repository, used to commit the new image tag (and, on rollback, a prior one)."
         required: true
       azure_tenant_id:
+        description: "Tenant ID shared by all three identities above."
         required: true
       azure_subscription_id:
+        description: "Subscription ID shared by all three identities above."
         required: true
 
 # Restrictive default; sast overrides to add security-events: write, same as both original files.

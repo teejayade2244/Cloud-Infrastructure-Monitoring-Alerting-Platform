@@ -1,41 +1,46 @@
 name: service production promotion template
 
-# Reusable production-promotion pipeline. Per docs/reusable-workflow-analysis.md: all 4 jobs here
-# came back 100% Category A - this pipeline never touches source code, only an already-built
-# tag, Git, and Kubernetes, so unlike the CI template there is no language input and no
-# conditional branching anywhere in this file.
+# Reusable production-promotion pipeline for any service using this org's Kubernetes + GitOps
+# deployment pattern. Every job here operates on an already-built artifact, Git, and Kubernetes -
+# none of them touch source code, so unlike the CI template there's no language input and no
+# per-caller branching anywhere in this file. Every caller uses this template identically; only
+# the values (service name, chart path, tag) differ.
 
 on:
   workflow_call:
     inputs:
       service_name:
-        description: "e.g. events-service - derives ARGOCD_APP_NAME, WORKFLOW_FILE values, commit messages"
+        description: "A short identifier for this service, e.g. my-service. Used to derive the deployment's name, the naming convention for the caller's own CI workflow file, and commit messages."
         required: true
         type: string
       chart_path:
-        description: "Chart directory in inframonitor-gitops, e.g. charts/events-service (values-production.yaml is appended)"
+        description: "Chart directory in your GitOps repository, e.g. charts/my-service (values-production.yaml is appended)"
         required: true
         type: string
       image_tag:
-        description: "Short SHA image tag to promote - forwarded from the caller's own workflow_dispatch input"
+        description: "The already-built image tag to promote - forwarded from the caller's own workflow_dispatch input"
         required: true
         type: string
       has_smoke_test:
         description: >-
           Whether to run smoke-test-production (and its rollback-production safety net) after
-          promotion. Same reasoning as service-ci-template.yml's has_smoke_test - this is a
-          skip toggle, not an escape hatch to a different verification mechanism.
+          promotion. Same reasoning as the CI template's has_smoke_test - this is a skip toggle,
+          not an escape hatch to a different verification mechanism.
         required: false
         type: boolean
         default: true
     secrets:
       azure_client_id_smoke:
+        description: "Client ID of the identity used by smoke-test-production to authenticate to the Kubernetes cluster and verify the promoted deployment."
         required: true
       gitops_pat:
+        description: "Token with write access to the GitOps repository, used to commit the promoted (and, on rollback, a prior) image tag."
         required: true
       azure_tenant_id:
+        description: "Tenant ID for the identity above."
         required: true
       azure_subscription_id:
+        description: "Subscription ID for the identity above."
         required: true
 
 permissions:
