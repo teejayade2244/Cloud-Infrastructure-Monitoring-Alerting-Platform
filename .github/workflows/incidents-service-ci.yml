@@ -16,7 +16,7 @@ on:
 
 jobs:
   call-service-ci:
-    uses: ./.github/workflows/templates/service-ci-template.yml
+    uses: ./.github/workflows/service-ci-template.yml
     with:
       service_name: incidents-service
       language: dotnet

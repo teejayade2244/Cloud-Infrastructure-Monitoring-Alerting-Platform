@@ -11,7 +11,7 @@ on:
 
 jobs:
   call-service-promotion:
-    uses: ./.github/workflows/templates/service-promotion-template.yml
+    uses: ./.github/workflows/service-promotion-template.yml
     with:
       service_name: incidents-service
       chart_path: charts/incidents-service
