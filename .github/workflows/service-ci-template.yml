@@ -303,17 +303,19 @@ jobs:
         with:
           client-id: ${{ secrets.azure_client_id_ci }}
           tenant-id: ${{ secrets.azure_tenant_id }}
-          subscription-id: ${{ secrets.azure_subscription_id }}
-          # Confirmed the hard way, via a real run against incidents-service-ci-identity:
-          # azure/login still tries to enumerate ARM subscriptions even with subscription-id
-          # explicitly set, and fails ("No subscriptions found") for an identity with zero
-          # standard Azure RBAC role assignments - Cosmos DB's data-plane RBAC (this identity's
-          # only real grant) is a separate authorization system that doesn't count.
-          # events-service-ci-identity never hit this because it incidentally also holds real
-          # Service Bus RBAC roles; incidents-service-ci-identity, with no Service Bus dependency
-          # at all, has nothing else to mask the gap. This identity only ever needs Cosmos DB
-          # data-plane access, never ARM resource management, so this is the correct fix, not a
-          # workaround.
+          # No subscription-id here, deliberately - confirmed the hard way, via two real failed
+          # runs against incidents-service-ci-identity: (1) with subscription-id set and no
+          # allow-no-subscriptions, login fails "No subscriptions found", because this identity
+          # has zero standard Azure RBAC role assignments (Cosmos DB's data-plane RBAC, its only
+          # real grant, is a separate authorization system that doesn't count). (2) adding
+          # allow-no-subscriptions: true while STILL passing subscription-id then fails
+          # differently - "The subscription of '***' doesn't exist in cloud 'AzureCloud'" - az
+          # tries to `account set` to that ID and can't, since the identity's enumerable
+          # subscription list is empty. The two options are mutually exclusive in practice; since
+          # this identity only ever needs an AAD token for Cosmos DB (no ARM calls at all),
+          # dropping subscription-id entirely alongside allow-no-subscriptions is correct, not a
+          # workaround. events-service-ci-identity never hit this because it incidentally also
+          # holds real Service Bus RBAC roles.
           allow-no-subscriptions: true
 
       # A step's env: is either a plain mapping or a single expression - there's no way to merge
