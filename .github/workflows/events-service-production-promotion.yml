@@ -30,6 +30,8 @@ jobs:
       aks_cluster_name: inframonitor-aks
       production_namespace: inframonitor-production
       smoke_test_script_path: scripts/smoke-test.sh
+      verify_staging_smoke_test_script_path: scripts/verify-staging-smoke-test.sh
+      rollback_script_path: scripts/find-rollback-target.sh
     secrets:
       azure_client_id_smoke: ${{ secrets.AZURE_CLIENT_ID_EVENTS_SMOKE }}
       gitops_pat: ${{ secrets.GITOPS_PAT }}
