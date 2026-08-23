@@ -29,6 +29,7 @@ jobs:
     uses: ./.github/workflows/service-ci-template.yml
     with:
       service_name: incidents-service
+      working_directory: Microservices/services/incidents-service
       has_gitops_deploy: true
       chart_path: charts/incidents-service
       image_repository: inframonitoraksacr.azurecr.io/incidents-service

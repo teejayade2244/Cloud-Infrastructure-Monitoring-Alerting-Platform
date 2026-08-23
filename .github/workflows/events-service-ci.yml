@@ -28,6 +28,7 @@ jobs:
     uses: ./.github/workflows/service-ci-template.yml
     with:
       service_name: events-service
+      working_directory: Microservices/services/events-service
       has_gitops_deploy: true
       chart_path: charts/events-service
       image_repository: inframonitoraksacr.azurecr.io/events-service

@@ -28,7 +28,15 @@ on:
   workflow_call:
     inputs:
       service_name:
-        description: "e.g. events-service - also derives WORKING_DIR, image tag, chart file names, WORKFLOW_FILE"
+        description: "e.g. events-service - used for image tags, artifact filenames, ARGOCD_APP_NAME, and (by convention) WORKFLOW_FILE = <service_name>-ci.yml. Not used to derive a source path - see working_directory."
+        required: true
+        type: string
+      working_directory:
+        description: >-
+          Full path to the service's own source directory, e.g. Microservices/services/events-service.
+          A caller with a different monorepo layout (services/<name>, apps/<name>, or a
+          single-service repo's own root) just supplies that path - this template never assumes
+          a Microservices/services/ prefix or any other directory convention.
         required: true
         type: string
       has_gitops_deploy:
@@ -158,7 +166,7 @@ jobs:
     container: ${{ inputs.build_container_image }}
     defaults:
       run:
-        working-directory: Microservices/services/${{ inputs.service_name }}
+        working-directory: ${{ inputs.working_directory }}
     steps:
       - uses: actions/checkout@v4
 
@@ -178,14 +186,14 @@ jobs:
 
       - name: Install dependencies
         if: inputs.install_command != ''
-        working-directory: Microservices/services/${{ inputs.service_name }}
+        working-directory: ${{ inputs.working_directory }}
         run: ${{ inputs.install_command }}
 
       # No job-level defaults.run.working-directory - unit_test_working_directory may be a
       # sibling of the service's own directory (confirmed against incidents-service.Tests's real
       # layout), not nested inside it, so every step that needs a directory is explicit instead.
       - name: Run tests
-        working-directory: ${{ inputs.unit_test_working_directory != '' && inputs.unit_test_working_directory || format('Microservices/services/{0}', inputs.service_name) }}
+        working-directory: ${{ inputs.unit_test_working_directory != '' && inputs.unit_test_working_directory || inputs.working_directory }}
         run: ${{ inputs.test_command }}
 
       - name: Upload coverage report
@@ -210,9 +218,9 @@ jobs:
         uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
         with:
           scan-type: fs
-          scan-ref: Microservices/services/${{ inputs.service_name }}
+          scan-ref: ${{ inputs.working_directory }}
           format: table
-          output: Microservices/services/${{ inputs.service_name }}/trivy-fs-results.txt
+          output: ${{ inputs.working_directory }}/trivy-fs-results.txt
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: 1
@@ -222,7 +230,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: trivy-dependency-scan-results
-          path: Microservices/services/${{ inputs.service_name }}/trivy-fs-results.txt
+          path: ${{ inputs.working_directory }}/trivy-fs-results.txt
           retention-days: 14
 
   sast:
@@ -248,7 +256,7 @@ jobs:
           languages: ${{ inputs.codeql_language }}
           config: |
             paths:
-              - Microservices/services/${{ inputs.service_name }}
+              - ${{ inputs.working_directory }}
             paths-ignore: ${{ inputs.codeql_paths_ignore }}
 
       - uses: github/codeql-action/autobuild@v3.37.7
@@ -264,7 +272,7 @@ jobs:
       image_tag: ${{ steps.vars.outputs.image_tag }}
     defaults:
       run:
-        working-directory: Microservices/services/${{ inputs.service_name }}
+        working-directory: ${{ inputs.working_directory }}
     steps:
       - uses: actions/checkout@v4
 
@@ -281,7 +289,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: docker-image
-          path: Microservices/services/${{ inputs.service_name }}/${{ inputs.service_name }}-image.tar
+          path: ${{ inputs.working_directory }}/${{ inputs.service_name }}-image.tar
           retention-days: 3
 
   # Always defined (workflow_call templates have a static job graph - a caller can't make a job
@@ -301,7 +309,7 @@ jobs:
 
       - name: Install dependencies
         if: inputs.install_command != ''
-        working-directory: Microservices/services/${{ inputs.service_name }}
+        working-directory: ${{ inputs.working_directory }}
         run: ${{ inputs.install_command }}
 
       # Unlike push-image/smoke-test-staging (bare ubuntu-latest, az pre-installed by the runner
@@ -347,7 +355,7 @@ jobs:
       # app doesn't use Cosmos DB/Service Bus at all just supplies a different map (incidents-service's
       # only needs COSMOS_ENDPOINT/COSMOS_TEST_DATABASE - it has no Service Bus dependency at all).
       - name: Run integration tests
-        working-directory: ${{ inputs.integration_test_working_directory != '' && inputs.integration_test_working_directory || format('Microservices/services/{0}', inputs.service_name) }}
+        working-directory: ${{ inputs.integration_test_working_directory != '' && inputs.integration_test_working_directory || inputs.working_directory }}
         run: ${{ inputs.integration_test_command }} 2>&1 | tee test-results.txt
         env: ${{ fromJSON(inputs.integration_test_vars) }}
 
@@ -356,7 +364,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: integration-test-results
-          path: ${{ inputs.integration_test_working_directory != '' && inputs.integration_test_working_directory || format('Microservices/services/{0}', inputs.service_name) }}/test-results.txt
+          path: ${{ inputs.integration_test_working_directory != '' && inputs.integration_test_working_directory || inputs.working_directory }}/test-results.txt
           retention-days: 14
 
   container-scan:
@@ -368,12 +376,12 @@ jobs:
       image_tag: ${{ needs.build-image.outputs.image_tag }}
     defaults:
       run:
-        working-directory: Microservices/services/${{ inputs.service_name }}
+        working-directory: ${{ inputs.working_directory }}
     steps:
       - uses: actions/download-artifact@v4
         with:
           name: docker-image
-          path: Microservices/services/${{ inputs.service_name }}
+          path: ${{ inputs.working_directory }}
 
       - run: docker load -i ${{ inputs.service_name }}-image.tar
 
@@ -382,7 +390,7 @@ jobs:
         with:
           image-ref: ${{ inputs.image_repository }}:${{ needs.build-image.outputs.image_tag }}
           format: table
-          output: Microservices/services/${{ inputs.service_name }}/trivy-results.txt
+          output: ${{ inputs.working_directory }}/trivy-results.txt
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: 1
@@ -392,7 +400,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: trivy-scan-results
-          path: Microservices/services/${{ inputs.service_name }}/trivy-results.txt
+          path: ${{ inputs.working_directory }}/trivy-results.txt
           retention-days: 14
 
       - name: Generate SBOM (CycloneDX)
@@ -401,14 +409,14 @@ jobs:
           scan-type: image
           image-ref: ${{ inputs.image_repository }}:${{ needs.build-image.outputs.image_tag }}
           format: cyclonedx
-          output: Microservices/services/${{ inputs.service_name }}/sbom.cyclonedx.json
+          output: ${{ inputs.working_directory }}/sbom.cyclonedx.json
 
       - name: Upload SBOM
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: sbom-cyclonedx
-          path: Microservices/services/${{ inputs.service_name }}/sbom.cyclonedx.json
+          path: ${{ inputs.working_directory }}/sbom.cyclonedx.json
           retention-days: 90
 
   push-image:
@@ -434,12 +442,12 @@ jobs:
       contents: read
     defaults:
       run:
-        working-directory: Microservices/services/${{ inputs.service_name }}
+        working-directory: ${{ inputs.working_directory }}
     steps:
       - uses: actions/download-artifact@v4
         with:
           name: docker-image
-          path: Microservices/services/${{ inputs.service_name }}
+          path: ${{ inputs.working_directory }}
 
       - run: docker load -i ${{ inputs.service_name }}-image.tar
 
