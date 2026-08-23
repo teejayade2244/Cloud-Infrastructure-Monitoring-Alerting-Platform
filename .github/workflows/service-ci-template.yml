@@ -289,6 +289,16 @@ jobs:
         working-directory: Microservices/services/${{ inputs.service_name }}
         run: ${{ inputs.install_command }}
 
+      # Unlike push-image/smoke-test-staging (bare ubuntu-latest, az pre-installed by the runner
+      # image), this job runs inside build_container_image - a caller-supplied image with no
+      # reason to have the Azure CLI. Confirmed the hard way: azure/login failed here with
+      # "Unable to locate executable file: az" before this step existed. The official install
+      # script assumes a Debian/Ubuntu-based image (true for both node:20 and
+      # mcr.microsoft.com/dotnet/sdk:10.0, the two real images in use) - a caller on a
+      # fundamentally different base (e.g. Alpine) would need their own equivalent install here.
+      - name: Install Azure CLI
+        run: curl -sL https://aka.ms/InstallAzureCLIDeb | bash
+
       - uses: azure/login@v2
         with:
           client-id: ${{ secrets.azure_client_id_ci }}
