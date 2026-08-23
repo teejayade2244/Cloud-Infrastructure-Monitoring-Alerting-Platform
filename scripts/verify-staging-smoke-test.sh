@@ -17,6 +17,11 @@ set -euo pipefail
 IMAGE_TAG="${IMAGE_TAG:?IMAGE_TAG must be set}"
 REPO="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY must be set}"
 WORKFLOW_FILE="${WORKFLOW_FILE:-events-service-ci.yml}"
+# Was hardcoded "Smoke Test (staging)" until a real production-promotion run failed against it -
+# once smoke-test-staging started running inside a reusable workflow_call template, GitHub Actions
+# reports its name as "<calling job id> / Smoke Test (staging)", not the bare job name. Same fix
+# find-rollback-target.sh's SMOKE_TEST_JOB_NAME already needed for the same reason.
+SMOKE_TEST_JOB_NAME="${SMOKE_TEST_JOB_NAME:-Smoke Test (staging)}"
 
 if ! [[ "$IMAGE_TAG" =~ ^[0-9a-f]{7}$ ]]; then
   echo "::error::image_tag '${IMAGE_TAG}' doesn't look like a short SHA (expected 7 lowercase hex characters) - refusing to promote an unverified artifact"
@@ -44,17 +49,17 @@ FOUND_SUCCESS=false
 for RUN_ID in $MATCHING_RUN_IDS; do
   echo "Checking run ${RUN_ID}..."
   JOB_CONCLUSION=$(gh run view "$RUN_ID" --repo "$REPO" --json jobs \
-    | jq -r '.jobs[] | select(.name == "Smoke Test (staging)") | .conclusion')
-  echo "  Smoke Test (staging) conclusion: ${JOB_CONCLUSION:-<job not found in this run>}"
+    | jq -r --arg name "$SMOKE_TEST_JOB_NAME" '.jobs[] | select(.name == $name) | .conclusion')
+  echo "  ${SMOKE_TEST_JOB_NAME} conclusion: ${JOB_CONCLUSION:-<job not found in this run>}"
   if [ "$JOB_CONCLUSION" = "success" ]; then
     FOUND_SUCCESS=true
-    echo "Verified: run ${RUN_ID} has a successful Smoke Test (staging) job for image tag ${IMAGE_TAG}."
+    echo "Verified: run ${RUN_ID} has a successful ${SMOKE_TEST_JOB_NAME} job for image tag ${IMAGE_TAG}."
     break
   fi
 done
 
 if [ "$FOUND_SUCCESS" != "true" ]; then
-  echo "::error::no verified staging smoke test found for tag ${IMAGE_TAG} - refusing to promote an unverified artifact (found a matching commit, but no run of it has a successful Smoke Test (staging) job)"
+  echo "::error::no verified staging smoke test found for tag ${IMAGE_TAG} - refusing to promote an unverified artifact (found a matching commit, but no run of it has a successful ${SMOKE_TEST_JOB_NAME} job)"
   exit 1
 fi
 
