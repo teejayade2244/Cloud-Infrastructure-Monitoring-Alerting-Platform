@@ -47,6 +47,7 @@ jobs:
       aks_resource_group: inframonitor-aks-rg
       aks_cluster_name: inframonitor-aks
       staging_namespace: inframonitor
+      smoke_test_script_path: scripts/smoke-test.sh
     secrets:
       azure_client_id_ci: ${{ secrets.AZURE_CLIENT_ID_EVENTS_CI }}
       azure_client_id_cd: ${{ secrets.AZURE_CLIENT_ID_EVENTS_CD }}

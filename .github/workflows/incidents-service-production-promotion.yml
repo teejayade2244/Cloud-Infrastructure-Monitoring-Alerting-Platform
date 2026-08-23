@@ -26,6 +26,7 @@ jobs:
       aks_resource_group: inframonitor-aks-rg
       aks_cluster_name: inframonitor-aks
       production_namespace: inframonitor-production
+      smoke_test_script_path: scripts/smoke-test.sh
     secrets:
       azure_client_id_smoke: ${{ secrets.AZURE_CLIENT_ID_INCIDENTS_SMOKE }}
       gitops_pat: ${{ secrets.GITOPS_PAT }}
