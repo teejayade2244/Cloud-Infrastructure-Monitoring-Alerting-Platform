@@ -1,11 +1,5 @@
 name: service production promotion template
 
-# Reusable production-promotion pipeline for any service using this org's Kubernetes + GitOps
-# deployment pattern. Every job here operates on an already-built artifact, Git, and Kubernetes -
-# none of them touch source code, so unlike the CI template there's no language input and no
-# per-caller branching anywhere in this file. Every caller uses this template identically; only
-# the values (service name, chart path, tag) differ.
-
 on:
   workflow_call:
     inputs:
@@ -100,16 +94,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IMAGE_TAG: ${{ inputs.image_tag }}
-          # <service_name>-ci.yml by the same naming convention service-ci-template.yml's
-          # rollback-staging job already relies on.
           WORKFLOW_FILE: ${{ inputs.service_name }}-ci.yml
-          # "call-service-ci / " is not decorative - it's the real, literal job name GitHub
-          # Actions reports for any job running inside a workflow_call template, prefixed with
-          # the CALLING job's own id (both CI caller files use call-service-ci). Confirmed the
-          # hard way: this script originally hardcoded the bare "Smoke Test (staging)" name (from
-          # before the reusable-template migration), and a real production promotion failed
-          # against it - the job genuinely succeeded, but under a name this script never
-          # recognized.
           SMOKE_TEST_JOB_NAME: "call-service-ci / Smoke Test (staging)"
         run: ${{ inputs.verify_staging_smoke_test_script_path }}
 
@@ -185,6 +170,7 @@ jobs:
           ARGOCD_APP_NAME: ${{ inputs.service_name }}-production
           ENVIRONMENT_LABEL: production
           SERVICE_NAME: ${{ inputs.service_name }}
+          AZURE_CLIENT_ID: ${{ secrets.azure_client_id_smoke }}
         run: ${{ inputs.smoke_test_script_path }}
 
       - name: Upload smoke test evidence
@@ -198,10 +184,6 @@ jobs:
   rollback-production:
     name: Rollback production (automatic)
     needs: smoke-test-production
-    # failure() is required here, not just the needs.*.result check alone - same, previously-fixed
-    # bug in this project's history: GitHub Actions silently ANDs an implicit success() onto any
-    # job's if: condition unless it already contains a status-check function. Applied correctly
-    # from the start in this template.
     if: failure() && needs.smoke-test-production.result == 'failure'
     runs-on: ubuntu-latest
     permissions:
@@ -215,12 +197,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           WORKFLOW_FILE: ${{ inputs.service_name }}-production-promotion.yml
-          # "call-service-promotion / " prefix - see verify-staging-smoke-test's env above for why.
           SMOKE_TEST_JOB_NAME: "call-service-promotion / Smoke Test (production)"
-          # Production runs are workflow_dispatch-triggered - no head_sha-to-tag correspondence
-          # the way staging has (GitHub's Actions API exposes no input-value field at all for a
-          # completed run). The smoke-test-evidence-production artifact Smoke Test (production)
-          # already uploads is the only reliable record of which tag a given run actually tested.
           TAG_SOURCE: artifact
           ARTIFACT_NAME: smoke-test-evidence-production
           LOOKBACK_LIMIT: "10"

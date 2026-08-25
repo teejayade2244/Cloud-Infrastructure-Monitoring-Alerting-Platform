@@ -225,10 +225,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Filesystem-mode scan of the service's own directory, before any build happens - distinct
-      # from container-scan, which checks the built image (OS packages + app deps together)
-      # after a full Docker build. Trivy auto-detects whatever lockfile format it finds
-      # (package-lock.json, packages.lock.json, go.sum, etc.) - no language input needed here.
       - name: Run Trivy dependency scan
         uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
         with:
@@ -253,11 +249,7 @@ jobs:
     needs: [lint-and-format, unit-tests]
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
-    # Same build_container_image as lint-and-format/unit-tests, unconditionally - CodeQL's own
-    # actions are JS-based and GitHub Actions injects Node.js into any container to run them, so
-    # this doesn't need a language-specific toggle the way a bare-runner setup step once did (a
-    # compiled language's autobuild needing its SDK present is exactly what the image already
-    # provides; an interpreted language's autobuild is a no-op regardless of the image).
+
     container: ${{ inputs.build_container_image }}
     permissions:
       contents: read
@@ -333,19 +325,9 @@ jobs:
           tenant-id: ${{ secrets.azure_tenant_id }}
           allow-no-subscriptions: true
 
-      # A step's env: is either a plain mapping or a single expression - there's no way to merge
-      # a literal key (AZURE_CLIENT_ID) with the fromJSON-expanded blob below in one env: block,
-      # since GitHub Actions expressions have no object-spread operator. Exporting it to
-      # $GITHUB_ENV here instead makes it part of the job's own environment for every subsequent
-      # step - AZURE_CLIENT_ID is a real secret so it stays its own named, explicit secrets:
-      # input (documented, required) rather than folded into the opaque integration_test_vars blob.
       - name: Export AZURE_CLIENT_ID
         run: echo "AZURE_CLIENT_ID=${{ secrets.azure_client_id_ci }}" >> "$GITHUB_ENV"
 
-      # integration_test_vars is an opaque JSON blob (see the input description) - this template
-      # never needs to know what a caller's integration tests actually depend on. A caller whose
-      # app doesn't use Cosmos DB/Service Bus at all just supplies a different map (incidents-service's
-      # only needs COSMOS_ENDPOINT/COSMOS_TEST_DATABASE - it has no Service Bus dependency at all).
       - name: Run integration tests
         working-directory: ${{ inputs.integration_test_working_directory != '' && inputs.integration_test_working_directory || inputs.working_directory }}
         run: ${{ inputs.integration_test_command }} 2>&1 | tee test-results.txt
@@ -414,13 +396,6 @@ jobs:
   push-image:
     name: Push Image to ACR (staging)
     needs: [container-scan, integration-tests]
-    # integration-tests is ALWAYS a needs: dependency (workflow_call's static job graph means it
-    # always exists), but for a caller with has_integration_tests: false it's skipped, not
-    # failed/succeeded - so this condition explicitly accepts 'skipped' alongside 'success' for
-    # that one dependency, while still hard-requiring container-scan to have genuinely succeeded.
-    # Without the leading always(), the implicit success() GitHub ANDs onto a condition lacking a
-    # status-check function would make this job skip whenever integration-tests skips, which is
-    # exactly the wrong behavior for a service that doesn't have integration tests yet.
     if: |
       always() &&
       needs.container-scan.result == 'success' &&
@@ -521,6 +496,7 @@ jobs:
           NAMESPACE: ${{ inputs.staging_namespace }}
           ARGOCD_APP_NAME: ${{ inputs.service_name }}-staging
           SERVICE_NAME: ${{ inputs.service_name }}
+          AZURE_CLIENT_ID: ${{ secrets.azure_client_id_smoke }}
         run: ${{ inputs.smoke_test_script_path }}
 
       - name: Upload smoke test evidence
@@ -547,10 +523,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           WORKFLOW_FILE: ${{ inputs.service_name }}-ci.yml
-          # "call-service-ci / " prefix - see verify-staging-smoke-test.sh's SMOKE_TEST_JOB_NAME
-          # comment for why: this is the real, literal job name GitHub Actions reports for a job
-          # running inside a workflow_call template (both CI caller files use call-service-ci as
-          # their calling job id), confirmed the hard way via a real failed production promotion.
           SMOKE_TEST_JOB_NAME: "call-service-ci / Smoke Test (staging)"
           TAG_SOURCE: head_sha
           LOOKBACK_LIMIT: "10"
