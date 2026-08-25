@@ -232,15 +232,25 @@ describe("create-incident-job integration (real Cosmos DB + Service Bus)", () =>
         }
     }, 30000)
 
-    test("runJob dead-letters a message that causes a real Cosmos rejection, rather than losing it", async () => {
+    test("runJob dead-letters a message that causes handleEvent to genuinely throw, rather than losing it", async () => {
+        // Two prior approaches were tried and ruled out for real, not just in theory:
+        // 1. A missing severity (the Incidents container's real partition key path, confirmed
+        //    via az cosmosdb sql container show) does NOT trigger a rejection - Cosmos DB
+        //    accepts a write missing its partition key property, placing it in a synthetic
+        //    "Undefined" logical partition instead. Confirmed for real after the CI step
+        //    masking this suite's actual result got fixed - "Incident created" had been logged
+        //    for this exact test's event the whole time, meaning the write had silently
+        //    succeeded on every prior run.
+        // 2. An oversized message (targeting Cosmos's 2MB document limit) can't even be
+        //    published - this namespace is Standard tier (confirmed via az servicebus namespace
+        //    show), capped at 256KB per message, well below what's needed.
+        // A missing `type` causes handleEvent's own event.type.toUpperCase() to throw a real,
+        // deterministic TypeError before Cosmos is ever involved - genuinely real, not a mocked
+        // throw, and doesn't depend on guessing another Cosmos/Service Bus constraint.
         const malformedEvent = {
             id: "evt-integration-3",
-            type: "alert",
             environment: "staging",
-            // severity intentionally omitted - confirmed directly against the real Cosmos
-            // container (az cosmosdb sql container show) that /severity is the Incidents
-            // container's actual partition key path, so writing a document without it is a
-            // genuine Cosmos SDK/service rejection, not a fabricated throw.
+            severity: "high",
             message: "integration test malformed event",
             source: TEST_RUN_ID,
         }
