@@ -1,0 +1,34 @@
+name: create-incident-job production promotion
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: >-
+          Short SHA image tag to promote (must already be built, scanned, and smoke-tested in
+          staging)
+        required: true
+        type: string
+permissions:
+  contents: read
+  id-token: write
+  actions: read
+
+jobs:
+  call-service-promotion:
+    uses: ./.github/workflows/service-promotion-template.yml
+    with:
+      service_name: create-incident-job
+      gitops_repository: teejayade2244/inframonitor-gitops
+      chart_path: charts/create-incident-job
+      image_tag: ${{ inputs.image_tag }}
+      aks_resource_group: inframonitor-aks-rg
+      aks_cluster_name: inframonitor-aks
+      production_namespace: inframonitor-production
+      smoke_test_script_path: scripts/create-incident-job-smoke-test.sh
+      verify_staging_smoke_test_script_path: scripts/verify-staging-smoke-test.sh
+      rollback_script_path: scripts/find-rollback-target.sh
+    secrets:
+      azure_client_id_smoke: ${{ secrets.AZURE_CLIENT_ID_CREATE_INCIDENT_SMOKE }}
+      gitops_pat: ${{ secrets.GITOPS_PAT }}
+      azure_tenant_id: ${{ secrets.AZURE_TENANT_ID }}
+      azure_subscription_id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}

@@ -1,5 +1,8 @@
 const appInsights = require("applicationinsights")
-if (process.env.APPLICATIONINSIGHTS_CONNECTION_STRING && !appInsights.defaultClient) {
+if (
+    process.env.APPLICATIONINSIGHTS_CONNECTION_STRING &&
+    !appInsights.defaultClient
+) {
     appInsights.setup(process.env.APPLICATIONINSIGHTS_CONNECTION_STRING).start()
 }
 
@@ -28,12 +31,30 @@ async function handleEvent(event) {
     console.log(`Incident created: ${incident.id} for event ${event.id}`)
 }
 
-runJob("create-incident", handleEvent)
-    .then((count) => {
-        console.log(`create-incident job complete, processed ${count} message(s)`)
-        process.exit(0)
-    })
-    .catch((err) => {
-        console.error("create-incident job failed", err)
-        process.exit(1)
-    })
+// Defaults to the production subscription name - only set explicitly for a different
+// environment (e.g. create-incident-prod for the production namespace).
+const subscriptionName =
+    process.env.SERVICEBUS_SUBSCRIPTION?.trim() || "create-incident"
+
+// Only runs the job when this file is executed directly (node src/create-incident.js, the real
+// production entrypoint), not when it's require()'d - e.g. by a test importing handleEvent.
+// require.main === module is Node's standard idiom for this; it changes nothing about how the
+// container actually runs the file. istanbul ignore next: pure entrypoint wiring, no branching
+// logic of its own worth unit-testing - deliberately excluded from coverage accounting, same as
+// the appInsights bootstrap above.
+/* istanbul ignore next */
+if (require.main === module) {
+    runJob(subscriptionName, handleEvent)
+        .then((count) => {
+            console.log(
+                `create-incident job complete, processed ${count} message(s)`,
+            )
+            process.exit(0)
+        })
+        .catch((err) => {
+            console.error("create-incident job failed", err)
+            process.exit(1)
+        })
+}
+
+module.exports = { handleEvent }

@@ -1,0 +1,58 @@
+name: create-incident-job CI
+
+on:
+  push:
+    branches: ['**']
+    paths: ['Microservices/functions/incident-function/**']
+  pull_request:
+    branches: [main]
+    paths: ['Microservices/functions/incident-function/**']
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  security-events: write
+  id-token: write
+  actions: read
+
+jobs:
+  call-service-ci:
+    uses: ./.github/workflows/service-ci-template.yml
+    with:
+      service_name: create-incident-job
+      working_directory: Microservices/functions/incident-function
+      has_gitops_deploy: true
+      gitops_repository: teejayade2244/inframonitor-gitops
+      chart_path: charts/create-incident-job
+      image_repository: inframonitoraksacr.azurecr.io/create-incident-job
+      container_registry_name: inframonitoraksacr
+      build_container_image: node:20
+      install_command: npm ci
+      lint_command: npm run lint && npm run format:check
+      test_command: npm run test:coverage
+      coverage_report_path: Microservices/functions/incident-function/coverage/
+      codeql_language: javascript
+      codeql_paths_ignore: '["Microservices/functions/incident-function/node_modules", "Microservices/functions/incident-function/coverage"]'
+      has_integration_tests: true
+      integration_test_command: npm run test:integration
+      integration_test_vars: |
+        {
+          "COSMOS_ENDPOINT": "${{ vars.COSMOS_ENDPOINT }}",
+          "COSMOS_TEST_DATABASE": "${{ vars.COSMOS_TEST_DATABASE }}",
+          "SERVICEBUS_NAMESPACE": "${{ vars.SERVICEBUS_NAMESPACE }}",
+          "SERVICEBUS_TEST_TOPIC": "${{ vars.SERVICEBUS_TEST_TOPIC }}",
+          "SERVICEBUS_TEST_SUBSCRIPTION": "create-incident-job-test"
+        }
+      has_smoke_test: true
+      aks_resource_group: inframonitor-aks-rg
+      aks_cluster_name: inframonitor-aks
+      staging_namespace: inframonitor
+      smoke_test_script_path: scripts/create-incident-job-smoke-test.sh
+      rollback_script_path: scripts/find-rollback-target.sh
+    secrets:
+      azure_client_id_ci: ${{ secrets.AZURE_CLIENT_ID_CREATE_INCIDENT_CI }}
+      azure_client_id_cd: ${{ secrets.AZURE_CLIENT_ID_CREATE_INCIDENT_CD }}
+      azure_client_id_smoke: ${{ secrets.AZURE_CLIENT_ID_CREATE_INCIDENT_SMOKE }}
+      gitops_pat: ${{ secrets.GITOPS_PAT }}
+      azure_tenant_id: ${{ secrets.AZURE_TENANT_ID }}
+      azure_subscription_id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
