@@ -22,7 +22,10 @@ function createCosmosContainer(containerName, env = process.env) {
         aadCredentials: createCredential(env),
     })
 
-    return client.database("InfraMonitorDB").container(containerName)
+    // Defaults to the production database name - only set explicitly when this job is deployed
+    // against a different environment (e.g. InfraMonitorProdDB for the production namespace).
+    const databaseName = env.COSMOS_DATABASE?.trim() || "InfraMonitorDB"
+    return client.database(databaseName).container(containerName)
 }
 
 function createServiceBusClient(env = process.env) {

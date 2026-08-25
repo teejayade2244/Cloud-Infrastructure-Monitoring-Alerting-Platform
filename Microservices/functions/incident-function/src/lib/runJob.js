@@ -1,6 +1,5 @@
 const { createServiceBusClient } = require("./azureClients")
 
-const TOPIC_NAME = "infrastructure-events"
 const MAX_MESSAGES = 10
 const MAX_WAIT_TIME_MS = 10000
 
@@ -9,10 +8,17 @@ const MAX_WAIT_TIME_MS = 10000
 // drains whatever's currently available on the subscription, processes it, and exits - it does
 // not keep polling.
 async function runJob(subscriptionName, handler, env = process.env) {
+    // Defaults to the production topic name - only set explicitly for a different environment
+    // (e.g. infrastructure-events-prod for the production namespace).
+    const topicName = env.SERVICEBUS_TOPIC?.trim() || "infrastructure-events"
     const serviceBusClient = createServiceBusClient(env)
-    const receiver = serviceBusClient.createReceiver(TOPIC_NAME, subscriptionName, {
-        receiveMode: "peekLock",
-    })
+    const receiver = serviceBusClient.createReceiver(
+        topicName,
+        subscriptionName,
+        {
+            receiveMode: "peekLock",
+        },
+    )
 
     let processed = 0
     try {
@@ -20,7 +26,9 @@ async function runJob(subscriptionName, handler, env = process.env) {
             maxWaitTimeInMs: MAX_WAIT_TIME_MS,
         })
 
-        console.log(`${subscriptionName}: received ${messages.length} message(s)`)
+        console.log(
+            `${subscriptionName}: received ${messages.length} message(s)`,
+        )
 
         for (const message of messages) {
             try {
@@ -47,4 +55,4 @@ async function runJob(subscriptionName, handler, env = process.env) {
     return processed
 }
 
-module.exports = { runJob, TOPIC_NAME }
+module.exports = { runJob }
