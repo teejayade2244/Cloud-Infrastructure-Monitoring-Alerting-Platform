@@ -326,8 +326,19 @@ jobs:
 
   integration-tests:
     name: Integration Tests
-    needs: [lint-and-format, unit-tests, dependency-scan, dockerfile-lint]
-    if: inputs.has_integration_tests && (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+    needs: [lint-and-format, unit-tests, dependency-scan, dockerfile-lint, sast]
+    # sast only runs on pull_request (see its own if:) - always skipped on a push to main, not
+    # failed/succeeded. always() means every other needs entry now needs an explicit check too,
+    # same reasoning as build-image's own needs.integration-tests handling above.
+    if: |
+      always() &&
+      inputs.has_integration_tests &&
+      needs.lint-and-format.result == 'success' &&
+      needs.unit-tests.result == 'success' &&
+      needs.dependency-scan.result == 'success' &&
+      needs.dockerfile-lint.result == 'success' &&
+      (needs.sast.result == 'success' || needs.sast.result == 'skipped') &&
+      (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
     runs-on: ubuntu-latest
     container: ${{ inputs.build_container_image }}
     permissions:
