@@ -188,12 +188,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Runs on the runner directly (not build_container_image) - hadolint lints the Dockerfile
-      # SOURCE, before any build happens, so it has no dependency on this service's own
-      # toolchain. Version pinned to 2.15.1 - matches what was verified locally against all
-      # three services' real Dockerfiles before this became a blocking gate.
       - name: Run hadolint
-        run: docker run --rm -i hadolint/hadolint:2.15.1 < ${{ inputs.dockerfile_path }}
+        run: docker run --rm -i hadolint/hadolint:v2.15.1 < ${{ inputs.dockerfile_path }}
 
   lint-and-format:
     name: Lint & Format Check
