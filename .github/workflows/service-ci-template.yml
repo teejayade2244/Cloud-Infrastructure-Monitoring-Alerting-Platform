@@ -285,8 +285,20 @@ jobs:
 
   build-image:
     name: Docker Build
-    needs: [lint-and-format, unit-tests, dependency-scan, dockerfile-lint]
-    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    needs: [lint-and-format, unit-tests, dependency-scan, dockerfile-lint, integration-tests]
+    # integration-tests is ALWAYS a needs: dependency (workflow_call's static job graph means it
+    # always exists), but for a caller with has_integration_tests: false it's skipped, not
+    # failed/succeeded - same reasoning as push-image's own needs.integration-tests handling
+    # below. always() means every OTHER needs entry now requires an explicit check too, not just
+    # this one - there's no shortcut once always() is present.
+    if: |
+      always() &&
+      needs.lint-and-format.result == 'success' &&
+      needs.unit-tests.result == 'success' &&
+      needs.dependency-scan.result == 'success' &&
+      needs.dockerfile-lint.result == 'success' &&
+      (needs.integration-tests.result == 'success' || needs.integration-tests.result == 'skipped') &&
+      (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
     runs-on: ubuntu-latest
     outputs:
       image_tag: ${{ steps.vars.outputs.image_tag }}
@@ -434,15 +446,6 @@ jobs:
 
       - run: docker load -i ${{ inputs.service_name }}-image.tar
 
-      # Genuinely parallel with container-scan (Trivy) - both independently need only the
-      # already-built image, neither depends on the other's result. Blocks on WARN/FATAL, not
-      # INFO - a real decision, not a default: verified locally against all three services'
-      # actual images that several INFO-level findings are either not fixable at the Dockerfile
-      # level (Docker Content Trust is a docker-CLI/build-environment setting) or inherent to a
-      # base image neither this project nor this fix controls (setuid/setgid system binaries,
-      # missing curl/wget for a HEALTHCHECK). The one genuinely actionable class of finding
-      # (WARN: running as root) is already fixed in all three Dockerfiles and would be caught
-      # again here if reintroduced. Version pinned to v0.4.15 - matches what was verified locally.
       - name: Run dockle
         run: |
           docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
