@@ -25,6 +25,7 @@ jobs:
       gitops_repository: teejayade2244/inframonitor-gitops
       chart_path: charts/create-incident-job
       image_repository: inframonitoraksacr.azurecr.io/create-incident-job
+      dockerfile_path: Microservices/functions/incident-function/Dockerfile
       container_registry_name: inframonitoraksacr
       build_container_image: node:20
       install_command: npm ci

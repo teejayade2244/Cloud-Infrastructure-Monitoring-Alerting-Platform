@@ -25,6 +25,7 @@ jobs:
       gitops_repository: teejayade2244/inframonitor-gitops
       chart_path: charts/events-service
       image_repository: inframonitoraksacr.azurecr.io/events-service
+      dockerfile_path: Microservices/services/events-service/Dockerfile
       container_registry_name: inframonitoraksacr
       build_container_image: node:20
       install_command: npm ci

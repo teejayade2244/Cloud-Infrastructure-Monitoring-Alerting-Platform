@@ -44,6 +44,10 @@ on:
         description: "Just the registry name push-image logs into, e.g. myregistry (the part of image_repository before .azurecr.io). Kept as its own input rather than parsed out of image_repository, since GitHub Actions expressions have no string-split function."
         required: true
         type: string
+      dockerfile_path:
+        description: "Full path to this service's own Dockerfile, e.g. services/my-service/Dockerfile."
+        required: true
+        type: string
       build_container_image:
         description: >-
           The container image lint-and-format, unit-tests, sast, and integration-tests all run
@@ -178,6 +182,19 @@ permissions:
   contents: read
 
 jobs:
+  dockerfile-lint:
+    name: Dockerfile Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Runs on the runner directly (not build_container_image) - hadolint lints the Dockerfile
+      # SOURCE, before any build happens, so it has no dependency on this service's own
+      # toolchain. Version pinned to 2.15.1 - matches what was verified locally against all
+      # three services' real Dockerfiles before this became a blocking gate.
+      - name: Run hadolint
+        run: docker run --rm -i hadolint/hadolint:2.15.1 < ${{ inputs.dockerfile_path }}
+
   lint-and-format:
     name: Lint & Format Check
     runs-on: ubuntu-latest
@@ -272,7 +289,7 @@ jobs:
 
   build-image:
     name: Docker Build
-    needs: [lint-and-format, unit-tests, dependency-scan]
+    needs: [lint-and-format, unit-tests, dependency-scan, dockerfile-lint]
     if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     outputs:
@@ -405,12 +422,45 @@ jobs:
           path: ${{ inputs.working_directory }}/sbom.cyclonedx.json
           retention-days: 90
 
+  image-compliance-scan:
+    name: Image Compliance Scan (CIS Docker Benchmark)
+    needs: build-image
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+          path: ${{ inputs.working_directory }}
+
+      - run: docker load -i ${{ inputs.service_name }}-image.tar
+
+      # Genuinely parallel with container-scan (Trivy) - both independently need only the
+      # already-built image, neither depends on the other's result. Blocks on WARN/FATAL, not
+      # INFO - a real decision, not a default: verified locally against all three services'
+      # actual images that several INFO-level findings are either not fixable at the Dockerfile
+      # level (Docker Content Trust is a docker-CLI/build-environment setting) or inherent to a
+      # base image neither this project nor this fix controls (setuid/setgid system binaries,
+      # missing curl/wget for a HEALTHCHECK). The one genuinely actionable class of finding
+      # (WARN: running as root) is already fixed in all three Dockerfiles and would be caught
+      # again here if reintroduced. Version pinned to v0.4.15 - matches what was verified locally.
+      - name: Run dockle
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            goodwithtech/dockle:v0.4.15 \
+            --exit-code 1 --exit-level warn \
+            ${{ inputs.image_repository }}:${{ needs.build-image.outputs.image_tag }}
+
   push-image:
     name: Push Image to ACR (staging)
-    needs: [container-scan, integration-tests]
+    needs: [container-scan, image-compliance-scan, integration-tests]
     if: |
       always() &&
       needs.container-scan.result == 'success' &&
+      needs.image-compliance-scan.result == 'success' &&
       (needs.integration-tests.result == 'success' || needs.integration-tests.result == 'skipped') &&
       github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
@@ -468,10 +518,17 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add ${{ inputs.chart_path }}/values-staging.yaml
-          git commit -m "deploy(staging): ${{ inputs.service_name }} to ${{ needs.push-image.outputs.image_tag }}
+          # Confirmed for real (in service-promotion-template.yml's equivalent step): re-running
+          # against an already-current tag leaves nothing staged - git commit fails outright on
+          # "nothing to commit" rather than treating an already-correct state as a no-op success.
+          if git diff --staged --quiet; then
+            echo "${{ inputs.chart_path }}/values-staging.yaml already references ${{ needs.push-image.outputs.image_tag }} - nothing to commit."
+          else
+            git commit -m "deploy(staging): ${{ inputs.service_name }} to ${{ needs.push-image.outputs.image_tag }}
 
           Source: ${{ github.repository }}@${{ github.sha }}"
-          git push
+            git push
+          fi
 
   smoke-test-staging:
     name: Smoke Test (staging)
@@ -562,13 +619,18 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add ${{ inputs.chart_path }}/values-staging.yaml
-          git commit -m "rollback(staging): automatic rollback to ${{ steps.find_target.outputs.rollback_tag }}
+          # Same guard as the staging deploy commit step above - see that step's comment.
+          if git diff --staged --quiet; then
+            echo "${{ inputs.chart_path }}/values-staging.yaml already references ${{ steps.find_target.outputs.rollback_tag }} - nothing to commit."
+          else
+            git commit -m "rollback(staging): automatic rollback to ${{ steps.find_target.outputs.rollback_tag }}
 
           AUTOMATIC ROLLBACK - triggered by a failed staging smoke test
           Rolled back FROM: ${{ needs.smoke-test-staging.outputs.image_tag }}
           Rolled back TO (last verified-good): ${{ steps.find_target.outputs.rollback_tag }}
           Failed run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          git push
+            git push
+          fi
 
       - name: Report rollback
         run: |
