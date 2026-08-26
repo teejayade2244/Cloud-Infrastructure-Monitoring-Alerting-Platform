@@ -259,7 +259,7 @@ jobs:
 
   sast:
     name: CodeQL (SAST)
-    needs: [lint-and-format, unit-tests, dependency-scan]
+    needs: [lint-and-format, unit-tests, dependency-scan, dockerfile-lint]
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
 
@@ -326,7 +326,7 @@ jobs:
 
   integration-tests:
     name: Integration Tests
-    needs: [lint-and-format, unit-tests, dependency-scan]
+    needs: [lint-and-format, unit-tests, dependency-scan, dockerfile-lint]
     if: inputs.has_integration_tests && (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
     runs-on: ubuntu-latest
     container: ${{ inputs.build_container_image }}
