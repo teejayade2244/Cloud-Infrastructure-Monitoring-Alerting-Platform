@@ -1,3 +1,48 @@
+# Workflow Directory Structure
+
+Every workflow file in this directory is flat, directly under `.github/workflows/` - not
+organized into subfolders like `templates/` or `events-service/`, even though the naming below
+groups logically into exactly those categories. This is deliberate, not an oversight: **GitHub
+Actions only discovers workflow files placed directly in `.github/workflows/*.yml`.** A workflow
+(including a reusable one, referenced via `uses:`) placed in a subdirectory is never registered
+and can't be resolved - confirmed directly against this repo early in this project's CI/CD work,
+when the shared templates were originally placed in `.github/workflows/templates/` and every
+caller's `uses: ./.github/workflows/templates/service-ci-template.yml` failed to resolve at all.
+They were flattened to the current layout specifically to fix that.
+
+## Shared reusable templates (`workflow_call` only - never triggered directly)
+
+- **`service-ci-template.yml`** - the CI pipeline shape: lint, unit tests, dependency scan,
+  Dockerfile lint, SAST, integration tests, Docker build, container vulnerability scan, image
+  compliance scan, push to ACR, update staging GitOps values, staging smoke test, automatic
+  staging rollback.
+- **`service-promotion-template.yml`** - the production promotion shape: verify the staging
+  smoke test passed, promote to production, production smoke test, automatic production
+  rollback.
+
+Both are genuinely reusable - they take no assumptions about language, repository layout, or
+project naming (see each template's own `inputs:`/`secrets:` descriptions), and are designed so
+another team could adopt them in an unrelated repository.
+
+## Per-service thin callers (real triggers, thin `with:`/`secrets:` wiring into the templates above)
+
+| Service | CI (`push`/`pull_request`/`workflow_dispatch`) | Production promotion (`workflow_dispatch`) |
+|---|---|---|
+| events-service | `events-service-ci.yml` | `events-service-production-promotion.yml` |
+| incidents-service | `incidents-service-ci.yml` | `incidents-service-production-promotion.yml` |
+| create-incident-job | `create-incident-job-ci.yml` | `create-incident-job-production-promotion.yml` |
+
+Adding a fourth service means adding two more thin caller files following this exact naming
+pattern - never a change to either template.
+
+## Standalone workflows (unrelated to the service templates above)
+
+- **`deploy-frontend.yml`** - deploys `Frontend/` to Azure Static Web Apps on push to `main`.
+- **`terraform.yml`** - plans/applies `infra/` - see below, the rest of this file is about this
+  one workflow specifically.
+
+---
+
 # Terraform CI/CD Pipeline
 
 `terraform.yml` plans and applies the Terraform project at `infra/` whenever it changes. It
