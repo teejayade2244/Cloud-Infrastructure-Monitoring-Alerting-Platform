@@ -532,7 +532,11 @@ jobs:
   update-staging-values:
     name: Update staging image tag (GitOps)
     needs: push-image
-    if: inputs.has_gitops_deploy && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: |
+      always() &&
+      needs.push-image.result == 'success' &&
+      inputs.has_gitops_deploy &&
+      github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     outputs:
       image_tag: ${{ needs.push-image.outputs.image_tag }}
@@ -570,7 +574,11 @@ jobs:
   smoke-test-staging:
     name: Smoke Test (staging)
     needs: update-staging-values
-    if: inputs.has_smoke_test && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: |
+      always() &&
+      needs.update-staging-values.result == 'success' &&
+      inputs.has_smoke_test &&
+      github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
       id-token: write
