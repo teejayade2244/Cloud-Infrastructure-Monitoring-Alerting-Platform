@@ -12,17 +12,29 @@ They were flattened to the current layout specifically to fix that.
 
 ## Shared reusable templates (`workflow_call` only - never triggered directly)
 
-- **`service-ci-template.yml`** - the CI pipeline shape: lint, unit tests, dependency scan,
-  Dockerfile lint, SAST, integration tests, Docker build, container vulnerability scan, image
-  compliance scan, push to ACR, update staging GitOps values, staging smoke test, automatic
-  staging rollback.
+- **`service-ci-template.yml`** - the validation-only shape: Dockerfile lint, lint & format,
+  unit tests, dependency scan, SAST, integration tests. No Azure identity beyond
+  `azure_client_id_ci` (only when `has_integration_tests` is true) is ever required to adopt
+  this template on its own.
+- **`service-cd-template.yml`** - the staging-deployment shape: Docker build, container
+  vulnerability scan, image compliance scan, push to ACR, update staging GitOps values, staging
+  smoke test, automatic staging rollback. Split out from the CI template so a caller that only
+  wants validation - no registry, no deploy target - never has to provision Azure identities it
+  will never use. `build-image`/`container-scan`/`image-compliance-scan` still run on pull
+  requests, same as before the split; only the actual deploy-shaped jobs
+  (`push-image` onward) are `push`-to-`main`-only.
 - **`service-promotion-template.yml`** - the production promotion shape: verify the staging
   smoke test passed, promote to production, production smoke test, automatic production
   rollback.
 
-Both are genuinely reusable - they take no assumptions about language, repository layout, or
-project naming (see each template's own `inputs:`/`secrets:` descriptions), and are designed so
-another team could adopt them in an unrelated repository.
+All three are genuinely reusable - they take no assumptions about language, repository layout,
+or project naming (see each template's own `inputs:`/`secrets:` descriptions), and are designed
+so another team could adopt them in an unrelated repository. A caller invokes both
+`service-ci-template.yml` and `service-cd-template.yml` as two separate jobs
+(`call-service-ci`, `call-service-cd`) - the CD job is gated on the CI job's own result
+(`needs: call-service-ci`, explicit `always() && needs.call-service-ci.result == 'success'`
+rather than a bare `if: success()`, matching the same explicit-result-check pattern the rest of
+this pipeline already uses wherever `always()` is involved), not folded into one call.
 
 ## Per-service thin callers (real triggers, thin `with:`/`secrets:` wiring into the templates above)
 
@@ -32,8 +44,10 @@ another team could adopt them in an unrelated repository.
 | incidents-service | `incidents-service-ci.yml` | `incidents-service-production-promotion.yml` |
 | create-incident-job | `create-incident-job-ci.yml` | `create-incident-job-production-promotion.yml` |
 
-Adding a fourth service means adding two more thin caller files following this exact naming
-pattern - never a change to either template.
+Each `*-ci.yml` caller has two jobs - `call-service-ci` and `call-service-cd` - wiring its own
+`with:`/`secrets:` into the matching template. Adding a fourth service means adding two more
+thin caller files following this exact naming and two-job pattern - never a change to any of the
+three templates.
 
 ## Standalone workflows (unrelated to the service templates above)
 

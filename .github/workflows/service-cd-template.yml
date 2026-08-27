@@ -1,0 +1,440 @@
+name: service CD template
+
+on:
+  workflow_call:
+    inputs:
+      service_name:
+        description: "A short identifier for this service, e.g. my-service. Used for image tags, artifact filenames, and naming conventions elsewhere in the pipeline."
+        required: true
+        type: string
+      working_directory:
+        description: >-
+          Full path to this service's own source directory, e.g. services/my-service or
+          apps/my-service, or "." for a single-service repository. This template makes no
+          assumption about repository layout - whatever path you supply is used as-is.
+        required: true
+        type: string
+      has_image_push:
+        description: >-
+          Whether to run push-image (authenticate to a container registry and push the built,
+          scanned image) after build-image/container-scan/image-compliance-scan. A caller that
+          only wants build-image/container-scan/image-compliance-scan - a local build and its
+          scans, no registry/deploy relationship at all - should skip this entirely (false) and
+          needs zero Azure identity or secret to call this template. When false,
+          has_gitops_deploy's own jobs are automatically skipped too, the same way
+          has_gitops_deploy:false already skips smoke-test-staging/rollback-staging - there's no
+          image in the registry for them to deploy.
+        required: false
+        type: boolean
+        default: true
+      has_gitops_deploy:
+        description: >-
+          Whether to run update-staging-values.yaml (writing the new image tag to your GitOps
+          repository via a Helm values file edit + git push) after the image is built and pushed.
+          This is a skip toggle, not an escape hatch to a different deploy mechanism - a caller
+          not using Helm/GitOps should skip this entirely (false) and bring its own deploy job.
+          When false, smoke-test-staging and rollback-staging are automatically skipped too
+          (they depend on update-staging-values / smoke-test-staging, and GitHub's own gating on
+          needs: does the rest for free). Only meaningful when has_image_push is also true.
+        required: false
+        type: boolean
+        default: true
+      gitops_repository:
+        description: "Your GitOps repository, as owner/repo, e.g. my-org/my-gitops-repo. Only meaningful when has_gitops_deploy is true."
+        required: false
+        type: string
+        default: ''
+      chart_path:
+        description: "Chart directory in your GitOps repository, e.g. charts/my-service (values-staging.yaml is appended). Only meaningful when has_gitops_deploy is true."
+        required: false
+        type: string
+        default: ''
+      image_repository:
+        description: "Full container registry repository path for this service's image, e.g. myregistry.azurecr.io/my-service."
+        required: true
+        type: string
+      container_registry_name:
+        description: "Just the registry name push-image logs into, e.g. myregistry (the part of image_repository before .azurecr.io). Kept as its own input rather than parsed out of image_repository, since GitHub Actions expressions have no string-split function. Only meaningful when has_image_push is true."
+        required: false
+        type: string
+        default: ''
+      has_smoke_test:
+        description: >-
+          Whether to run smoke-test-staging (and its rollback-staging safety net) after deploy.
+          Unlike has_image_push/has_gitops_deploy, this is deliberately NOT an escape hatch to a
+          different verification mechanism - smoke-test-staging assumes a specific Kubernetes +
+          GitOps deployment target (that specificity is the actual value of the job, not
+          incidental scaffolding around it). A caller with a different deployment target should
+          skip it entirely (false) and bring its own deploy + verify job.
+        required: false
+        type: boolean
+        default: true
+      aks_resource_group:
+        description: "Resource group of the AKS cluster smoke-test-staging verifies against. Only meaningful when has_smoke_test is true."
+        required: false
+        type: string
+        default: ''
+      aks_cluster_name:
+        description: "Name of the AKS cluster smoke-test-staging verifies against. Only meaningful when has_smoke_test is true."
+        required: false
+        type: string
+        default: ''
+      staging_namespace:
+        description: "Kubernetes namespace the staging deployment lives in. Only meaningful when has_smoke_test is true."
+        required: false
+        type: string
+        default: ''
+      smoke_test_script_path:
+        description: >-
+          Path, in your own repository, to the script that runs the smoke test described above.
+          Only meaningful when has_smoke_test is true.
+        required: false
+        type: string
+        default: 'scripts/smoke-test.sh'
+      rollback_script_path:
+        description: >-
+          Path, in your own repository, to the script rollback-staging runs to find the last
+          known-good tag to roll back to.
+        required: false
+        type: string
+        default: 'scripts/find-rollback-target.sh'
+    secrets:
+      azure_client_id_cd:
+        description: "Client ID of the identity used by push-image to authenticate to the container registry. Only meaningful when has_image_push is true - a caller with it false needs none of this."
+        required: false
+      azure_client_id_smoke:
+        description: "Client ID of the identity used by smoke-test-staging to authenticate to the Kubernetes cluster and verify the deployment. Only meaningful when has_smoke_test is true."
+        required: false
+      gitops_pat:
+        description: "Token with write access to the GitOps repository, used to commit the new image tag (and, on rollback, a prior one). Only meaningful when has_gitops_deploy is true."
+        required: false
+      azure_tenant_id:
+        description: >-
+          Tenant ID shared by both identities above (azure_client_id_cd, azure_client_id_smoke).
+          Only meaningful when at least one of has_image_push/has_smoke_test is true.
+        required: false
+      azure_subscription_id:
+        description: "Subscription ID shared by both identities above. Same reasoning as azure_tenant_id."
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  build-image:
+    name: Docker Build
+    # No needs: here - unlike the single-template version, this template has no visibility into
+    # lint-and-format/unit-tests/dependency-scan/dockerfile-lint/integration-tests at all anymore;
+    # they live in service-ci-template.yml now. The caller's own call-service-cd job (needs:
+    # call-service-ci, if: needs.call-service-ci.result == 'success') is what used to be this
+    # job's explicit per-job result checks - a single gate one level up, not lost, just moved.
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.vars.outputs.image_tag }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute short SHA tag
+        id: vars
+        run: echo "image_tag=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Build image
+        run: docker build --platform linux/amd64 -t ${{ inputs.image_repository }}:${{ steps.vars.outputs.image_tag }} .
+
+      - name: Save image
+        run: docker save ${{ inputs.image_repository }}:${{ steps.vars.outputs.image_tag }} -o ${{ inputs.service_name }}-image.tar
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docker-image
+          path: ${{ inputs.working_directory }}/${{ inputs.service_name }}-image.tar
+          retention-days: 3
+
+  container-scan:
+    name: Container Vulnerability Scan
+    needs: build-image
+    if: |
+      always() &&
+      needs.build-image.result == 'success' &&
+      (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ needs.build-image.outputs.image_tag }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+          path: ${{ inputs.working_directory }}
+
+      - run: docker load -i ${{ inputs.service_name }}-image.tar
+
+      - name: Run Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          image-ref: ${{ inputs.image_repository }}:${{ needs.build-image.outputs.image_tag }}
+          format: table
+          output: ${{ inputs.working_directory }}/trivy-results.txt
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: 1
+
+      - name: Upload scan results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-scan-results
+          path: ${{ inputs.working_directory }}/trivy-results.txt
+          retention-days: 14
+
+      - name: Generate SBOM (CycloneDX)
+        uses: aquasecurity/trivy-action@a9c7b0f06e461e9d4b4d1711f154ee024b8d7ab8 # v0.36.0
+        with:
+          scan-type: image
+          image-ref: ${{ inputs.image_repository }}:${{ needs.build-image.outputs.image_tag }}
+          format: cyclonedx
+          output: ${{ inputs.working_directory }}/sbom.cyclonedx.json
+
+      - name: Upload SBOM
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-cyclonedx
+          path: ${{ inputs.working_directory }}/sbom.cyclonedx.json
+          retention-days: 90
+
+  image-compliance-scan:
+    name: Image Compliance Scan (CIS Docker Benchmark)
+    needs: build-image
+    if: |
+      always() &&
+      needs.build-image.result == 'success' &&
+      (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+          path: ${{ inputs.working_directory }}
+
+      - run: docker load -i ${{ inputs.service_name }}-image.tar
+
+      - name: Run dockle
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            goodwithtech/dockle:v0.4.15 \
+            --exit-code 1 --exit-level warn \
+            ${{ inputs.image_repository }}:${{ needs.build-image.outputs.image_tag }}
+
+  push-image:
+    name: Push Image to ACR (staging)
+    needs: [container-scan, image-compliance-scan]
+    # integration-tests no longer exists in this template's graph - the caller's
+    # call-service-cd gate (needs.call-service-ci.result == 'success') already guarantees it
+    # passed or was legitimately skipped before this template is invoked at all.
+    if: |
+      always() &&
+      inputs.has_image_push &&
+      needs.container-scan.result == 'success' &&
+      needs.image-compliance-scan.result == 'success' &&
+      github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ needs.container-scan.outputs.image_tag }}
+    permissions:
+      id-token: write
+      contents: read
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+          path: ${{ inputs.working_directory }}
+
+      - run: docker load -i ${{ inputs.service_name }}-image.tar
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.azure_client_id_cd }}
+          tenant-id: ${{ secrets.azure_tenant_id }}
+          subscription-id: ${{ secrets.azure_subscription_id }}
+
+      - name: Login to ACR
+        run: az acr login --name ${{ inputs.container_registry_name }}
+
+      - name: Push image
+        run: docker push ${{ inputs.image_repository }}:${{ needs.container-scan.outputs.image_tag }}
+
+  update-staging-values:
+    name: Update staging image tag (GitOps)
+    needs: push-image
+    if: |
+      always() &&
+      needs.push-image.result == 'success' &&
+      inputs.has_gitops_deploy &&
+      github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ needs.push-image.outputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.gitops_repository }}
+          token: ${{ secrets.gitops_pat }}
+
+      - name: Install yq
+        run: |
+          curl -sL -o /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_amd64
+          chmod +x /usr/local/bin/yq
+
+      - name: Set staging image tag
+        run: yq -i '.image.tag = "${{ needs.push-image.outputs.image_tag }}"' ${{ inputs.chart_path }}/values-staging.yaml
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add ${{ inputs.chart_path }}/values-staging.yaml
+          # Confirmed for real (in service-promotion-template.yml's equivalent step): re-running
+          # against an already-current tag leaves nothing staged - git commit fails outright on
+          # "nothing to commit" rather than treating an already-correct state as a no-op success.
+          if git diff --staged --quiet; then
+            echo "${{ inputs.chart_path }}/values-staging.yaml already references ${{ needs.push-image.outputs.image_tag }} - nothing to commit."
+          else
+            git commit -m "deploy(staging): ${{ inputs.service_name }} to ${{ needs.push-image.outputs.image_tag }}
+
+          Source: ${{ github.repository }}@${{ github.sha }}"
+            git push
+          fi
+
+  smoke-test-staging:
+    name: Smoke Test (staging)
+    needs: update-staging-values
+    if: |
+      always() &&
+      needs.update-staging-values.result == 'success' &&
+      inputs.has_smoke_test &&
+      github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      image_tag: ${{ needs.update-staging-values.outputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.azure_client_id_smoke }}
+          tenant-id: ${{ secrets.azure_tenant_id }}
+          subscription-id: ${{ secrets.azure_subscription_id }}
+
+      - name: Install kubectl + kubelogin
+        run: sudo az aks install-cli
+
+      - name: Get AKS credentials
+        run: az aks get-credentials --resource-group ${{ inputs.aks_resource_group }} --name ${{ inputs.aks_cluster_name }} --overwrite-existing
+
+      - name: Convert kubeconfig for azurecli auth
+        run: kubelogin convert-kubeconfig -l azurecli
+
+      - name: Run staging smoke test
+        id: smoke_test
+        env:
+          EXPECTED_TAG: ${{ needs.update-staging-values.outputs.image_tag }}
+          NAMESPACE: ${{ inputs.staging_namespace }}
+          ARGOCD_APP_NAME: ${{ inputs.service_name }}-staging
+          SERVICE_NAME: ${{ inputs.service_name }}
+          AZURE_CLIENT_ID: ${{ secrets.azure_client_id_smoke }}
+        run: ${{ inputs.smoke_test_script_path }}
+
+      - name: Upload smoke test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-test-evidence-staging
+          path: smoke-test-evidence/
+          retention-days: 14
+
+  rollback-staging:
+    name: Rollback staging (automatic)
+    needs: smoke-test-staging
+    if: failure() && needs.smoke-test-staging.result == 'failure'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find rollback target
+        id: find_target
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WORKFLOW_FILE: ${{ inputs.service_name }}-ci.yml
+          # smoke-test-staging now runs inside service-cd-template.yml, invoked by the caller's
+          # call-service-cd job - GitHub Actions reports its name as "<calling job id> / <job
+          # name>", so this has to track wherever the job actually lives, not a bare job name.
+          SMOKE_TEST_JOB_NAME: "call-service-cd / Smoke Test (staging)"
+          TAG_SOURCE: head_sha
+          LOOKBACK_LIMIT: "10"
+        run: ${{ inputs.rollback_script_path }}
+
+      - name: Checkout GitOps repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.gitops_repository }}
+          token: ${{ secrets.gitops_pat }}
+          path: gitops-repo
+
+      - name: Install yq
+        run: |
+          curl -sL -o /usr/local/bin/yq https://github.com/mikefarah/yq/releases/download/v4.53.3/yq_linux_amd64
+          chmod +x /usr/local/bin/yq
+
+      - name: Set staging image tag to rollback target
+        working-directory: gitops-repo
+        run: yq -i '.image.tag = "${{ steps.find_target.outputs.rollback_tag }}"' ${{ inputs.chart_path }}/values-staging.yaml
+
+      - name: Commit and push rollback
+        working-directory: gitops-repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add ${{ inputs.chart_path }}/values-staging.yaml
+          # Same guard as the staging deploy commit step above - see that step's comment.
+          if git diff --staged --quiet; then
+            echo "${{ inputs.chart_path }}/values-staging.yaml already references ${{ steps.find_target.outputs.rollback_tag }} - nothing to commit."
+          else
+            git commit -m "rollback(staging): automatic rollback to ${{ steps.find_target.outputs.rollback_tag }}
+
+          AUTOMATIC ROLLBACK - triggered by a failed staging smoke test
+          Rolled back FROM: ${{ needs.smoke-test-staging.outputs.image_tag }}
+          Rolled back TO (last verified-good): ${{ steps.find_target.outputs.rollback_tag }}
+          Failed run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            git push
+          fi
+
+      - name: Report rollback
+        run: |
+          {
+            echo "## Automatic staging rollback"
+            echo ""
+            echo "Smoke test failed for tag \`${{ needs.smoke-test-staging.outputs.image_tag }}\`."
+            echo ""
+            echo "Rolled staging back to tag \`${{ steps.find_target.outputs.rollback_tag }}\` - the most recent tag with a genuinely verified staging smoke test (from run [${{ steps.find_target.outputs.rollback_run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ steps.find_target.outputs.rollback_run_id }})). Pushed to the GitOps repository."
+            echo ""
+            echo "ArgoCD will sync this automatically, same as any other change - no manual action needed."
+          } >> "$GITHUB_STEP_SUMMARY"
