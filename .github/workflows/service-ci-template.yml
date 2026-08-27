@@ -14,6 +14,19 @@ on:
           assumption about repository layout - whatever path you supply is used as-is.
         required: true
         type: string
+      has_image_push:
+        description: >-
+          Whether to run push-image (authenticate to a container registry and push the built,
+          scanned image) after build-image/container-scan/image-compliance-scan. A caller that
+          only wants CI checks - lint, tests, scans, a local build - and no registry/deploy
+          relationship at all should skip this entirely (false) and needs zero Azure identity or
+          secret to adopt this template. When false, has_gitops_deploy's own jobs are
+          automatically skipped too, the same way has_gitops_deploy:false already skips
+          smoke-test-staging/rollback-staging - there's no image in the registry for them to
+          deploy.
+        required: false
+        type: boolean
+        default: true
       has_gitops_deploy:
         description: >-
           Whether to run update-staging-values.yaml (writing the new image tag to your GitOps
@@ -22,7 +35,7 @@ on:
           not using Helm/GitOps should skip this entirely (false) and bring its own deploy job.
           When false, smoke-test-staging and rollback-staging are automatically skipped too
           (they depend on update-staging-values / smoke-test-staging, and GitHub's own gating on
-          needs: does the rest for free).
+          needs: does the rest for free). Only meaningful when has_image_push is also true.
         required: false
         type: boolean
         default: true
@@ -41,9 +54,10 @@ on:
         required: true
         type: string
       container_registry_name:
-        description: "Just the registry name push-image logs into, e.g. myregistry (the part of image_repository before .azurecr.io). Kept as its own input rather than parsed out of image_repository, since GitHub Actions expressions have no string-split function."
-        required: true
+        description: "Just the registry name push-image logs into, e.g. myregistry (the part of image_repository before .azurecr.io). Kept as its own input rather than parsed out of image_repository, since GitHub Actions expressions have no string-split function. Only meaningful when has_image_push is true."
+        required: false
         type: string
+        default: ''
       dockerfile_path:
         description: "Full path to this service's own Dockerfile, e.g. services/my-service/Dockerfile."
         required: true
@@ -162,7 +176,7 @@ on:
         description: "Client ID of the identity used by integration-tests to authenticate to whatever real external systems it depends on."
         required: false
       azure_client_id_cd:
-        description: "Client ID of the identity used by push-image to authenticate to the container registry."
+        description: "Client ID of the identity used by push-image to authenticate to the container registry. Only meaningful when has_image_push is true - a CI-only caller needs none of this."
         required: false
       azure_client_id_smoke:
         description: "Client ID of the identity used by smoke-test-staging to authenticate to the Kubernetes cluster and verify the deployment."
@@ -171,10 +185,10 @@ on:
         description: "Token with write access to the GitOps repository, used to commit the new image tag (and, on rollback, a prior one)."
         required: false
       azure_tenant_id:
-        description: "Tenant ID shared by all three identities above."
+        description: "Tenant ID shared by all three identities above. Only meaningful when at least one of has_image_push/has_smoke_test is true."
         required: false
       azure_subscription_id:
-        description: "Subscription ID shared by all three identities above."
+        description: "Subscription ID shared by all three identities above. Same reasoning as azure_tenant_id."
         required: false
 
 # Restrictive default; sast overrides to add security-events: write, same as both original files.
@@ -496,6 +510,7 @@ jobs:
     needs: [container-scan, image-compliance-scan, integration-tests]
     if: |
       always() &&
+      inputs.has_image_push &&
       needs.container-scan.result == 'success' &&
       needs.image-compliance-scan.result == 'success' &&
       (needs.integration-tests.result == 'success' || needs.integration-tests.result == 'skipped') &&

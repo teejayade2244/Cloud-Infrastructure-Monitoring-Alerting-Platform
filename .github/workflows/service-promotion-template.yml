@@ -65,17 +65,17 @@ on:
         default: 'scripts/find-rollback-target.sh'
     secrets:
       azure_client_id_smoke:
-        description: "Client ID of the identity used by smoke-test-production to authenticate to the Kubernetes cluster and verify the promoted deployment."
-        required: true
+        description: "Client ID of the identity used by smoke-test-production to authenticate to the Kubernetes cluster and verify the promoted deployment. Only meaningful when has_smoke_test is true - smoke-test-production is its only consumer and is fully skippable."
+        required: false
       gitops_pat:
-        description: "Token with write access to the GitOps repository, used to commit the promoted (and, on rollback, a prior) image tag."
+        description: "Token with write access to the GitOps repository, used to commit the promoted (and, on rollback, a prior) image tag. promote-to-production has no skip toggle - required for real, not just declared as such."
         required: true
       azure_tenant_id:
-        description: "Tenant ID for the identity above."
-        required: true
+        description: "Tenant ID for the identity above. Optional here (unlike the CI template's copy of this secret) - this template's only consumer is smoke-test-production, which has_smoke_test can skip entirely; nothing else in this template uses Azure login."
+        required: false
       azure_subscription_id:
-        description: "Subscription ID for the identity above."
-        required: true
+        description: "Subscription ID for the identity above. Same reasoning as azure_tenant_id."
+        required: false
 
 permissions:
   contents: read
