@@ -6,13 +6,15 @@ on:
     paths:
       - 'Microservices/services/events-service/**'
       - '.github/workflows/service-ci-template.yml'
+      - '.github/workflows/service-cd-template.yml'
   pull_request:
     branches: [main]
     paths:
       - 'Microservices/services/events-service/**'
       - '.github/workflows/service-ci-template.yml'
+      - '.github/workflows/service-cd-template.yml'
   workflow_dispatch: {}
-  
+
 permissions:
   contents: read
   security-events: write
@@ -25,12 +27,7 @@ jobs:
     with:
       service_name: events-service
       working_directory: Microservices/services/events-service
-      has_gitops_deploy: true
-      gitops_repository: teejayade2244/inframonitor-gitops
-      chart_path: charts/events-service
-      image_repository: inframonitoraksacr.azurecr.io/events-service
       dockerfile_path: Microservices/services/events-service/Dockerfile
-      container_registry_name: inframonitoraksacr
       build_container_image: node:20
       install_command: npm ci
       lint_command: npm run lint && npm run format:check
@@ -48,6 +45,25 @@ jobs:
           "SERVICEBUS_TEST_TOPIC": "${{ vars.SERVICEBUS_TEST_TOPIC }}",
           "SERVICEBUS_TEST_SUBSCRIPTION": "${{ vars.SERVICEBUS_TEST_SUBSCRIPTION }}"
         }
+    secrets:
+      azure_client_id_ci: ${{ secrets.AZURE_CLIENT_ID_EVENTS_CI }}
+      azure_tenant_id: ${{ secrets.AZURE_TENANT_ID }}
+
+  call-service-cd:
+    needs: call-service-ci
+    if: |
+      always() &&
+      needs.call-service-ci.result == 'success' &&
+      (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+    uses: ./.github/workflows/service-cd-template.yml
+    with:
+      service_name: events-service
+      working_directory: Microservices/services/events-service
+      has_gitops_deploy: true
+      gitops_repository: teejayade2244/inframonitor-gitops
+      chart_path: charts/events-service
+      image_repository: inframonitoraksacr.azurecr.io/events-service
+      container_registry_name: inframonitoraksacr
       has_smoke_test: true
       aks_resource_group: inframonitor-aks-rg
       aks_cluster_name: inframonitor-aks
@@ -55,7 +71,6 @@ jobs:
       smoke_test_script_path: scripts/smoke-test.sh
       rollback_script_path: scripts/find-rollback-target.sh
     secrets:
-      azure_client_id_ci: ${{ secrets.AZURE_CLIENT_ID_EVENTS_CI }}
       azure_client_id_cd: ${{ secrets.AZURE_CLIENT_ID_EVENTS_CD }}
       azure_client_id_smoke: ${{ secrets.AZURE_CLIENT_ID_EVENTS_SMOKE }}
       gitops_pat: ${{ secrets.GITOPS_PAT }}

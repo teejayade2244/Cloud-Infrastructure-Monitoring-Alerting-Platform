@@ -95,7 +95,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           IMAGE_TAG: ${{ inputs.image_tag }}
           WORKFLOW_FILE: ${{ inputs.service_name }}-ci.yml
-          SMOKE_TEST_JOB_NAME: "call-service-ci / Smoke Test (staging)"
+          # smoke-test-staging runs inside service-cd-template.yml, invoked by the caller's
+          # call-service-cd job - not call-service-ci, which only ever runs the validation jobs
+          # now that the CI/CD template split is in place.
+          SMOKE_TEST_JOB_NAME: "call-service-cd / Smoke Test (staging)"
         run: ${{ inputs.verify_staging_smoke_test_script_path }}
 
   promote-to-production:
