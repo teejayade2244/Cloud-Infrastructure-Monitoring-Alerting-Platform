@@ -10,10 +10,6 @@ if [ "$SERVICE_NAME" != "create-incident-job" ]; then
   exit 1
 fi
 
-# Fixed across both environments - one Cosmos account, one Service Bus namespace for the whole
-# project (confirmed against charts/create-incident-job/values-staging.yaml and
-# values-production.yaml in inframonitor-gitops). Only the database/topic/subscription names
-# actually split by environment, same as the real job's own env vars do at runtime.
 COSMOS_ENDPOINT="https://inframonitor-aks-cosmos-eastus2.documents.azure.com:443/"
 SERVICEBUS_NAMESPACE="inframonitor-aks-svcbus.servicebus.windows.net"
 if [ "$ENVIRONMENT_LABEL" = "production" ]; then
@@ -73,10 +69,6 @@ cleanup() {
 trap cleanup EXIT
 
 # --- Stage 1: confirm ArgoCD sync -------------------------------------------------------------
-# Same reasoning as scripts/smoke-test.sh: ArgoCD polls Git every ~3 minutes by default, so a
-# hard refresh makes this deterministic rather than a race against that cycle. Requires get+patch
-# on this one named Application, granted via inframonitor-gitops's inframonitor-namespace chart
-# (ci-argocd-refresh-rbac.yaml, extended for create-incident-job-smoke-identity).
 kubectl patch application "$ARGOCD_APP_NAME" -n argocd --type merge \
   -p '{"metadata":{"annotations":{"argocd.argoproj.io/refresh":"hard"}}}'
 
@@ -195,8 +187,7 @@ EOF
 # --- Stage 2: publish one synthetic message to the REAL topic --------------------------------
 # The real topic/subscription this environment's create-incident-job actually consumes from -
 # deliberately not the test-tier topic integration tests use, since this is proving the real
-# deployed artifact's real Workload Identity against the real deployment path end to end, same
-# reasoning scripts/smoke-test.sh already uses for writing to the real (not test) Cosmos DB.
+# deployed artifact's real Workload Identity against the real deployment path end to end.
 TEST_SOURCE="ci-smoke-test-${GITHUB_RUN_ID:-manual}"
 export TEST_SOURCE
 TEST_MESSAGE_BODY=$(jq -n \
@@ -211,21 +202,11 @@ node "$NODE_SCRATCH_DIR/publish-message.js"
 echo "Published synthetic message (source=${TEST_SOURCE}) to ${SERVICEBUS_TOPIC}"
 
 # --- Stage 3: watch for KEDA to create a new Job, then wait for it to succeed -----------------
-# scaledjob.keda.sh/name is the label KEDA sets on every batch/v1 Job it creates per scaling
-# decision (one ScaledJob execution = one new Job object, not a reused one) - filtered to jobs
-# created after SCRIPT_START_TIME (captured before publishing, above) so a stale, unrelated
-# prior execution can't be mistaken for this run's own. ISO8601's fixed-width, zero-padded
-# format means plain string comparison (awk's $2 > since) is chronologically correct here,
-# without needing a date-parsing library.
 TIMEOUT=90
 INTERVAL=10
 ELAPSED=0
 JOB_NAME=""
 while true; do
-  # || true here, same reasoning as smoke-test.sh's own precedent: preserves this loop's
-  # tolerance of a transient kubectl failure under the pipefail set above, so one hiccup retries
-  # on the next iteration instead of aborting the whole script - the ELAPSED/TIMEOUT check below
-  # is what actually detects a genuine failure.
   JOB_NAME=$(kubectl get jobs -n "$NAMESPACE" -l "scaledjob.keda.sh/name=create-incident-job" \
     -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.metadata.creationTimestamp}{"\n"}{end}' \
     | awk -v since="$SCRIPT_START_TIME" '$2 > since {print $1}' | sort | tail -n1 || true)
@@ -276,9 +257,6 @@ while true; do
 done
 
 # --- Stage 4: query Cosmos directly for the real write ----------------------------------------
-# A successful Job exit only proves the process ran to completion, not that the Cosmos write
-# itself landed (same reasoning as smoke-test.sh's own note: /health alone doesn't prove a
-# write succeeded) - this is the actual proof, via an independent client, not the job's own.
 TIMEOUT=30
 INTERVAL=5
 ELAPSED=0

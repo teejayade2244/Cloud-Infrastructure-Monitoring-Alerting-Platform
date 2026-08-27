@@ -1,0 +1,15 @@
+{
+  "name": "metrics-collector",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Polls GitHub Actions run history for all three services and writes DORA/pipeline-timing data to Cosmos DB.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@azure/cosmos": "^4.0.0",
+    "@azure/identity": "^4.0.0",
+    "adm-zip": "^0.6.0"
+  }
+}

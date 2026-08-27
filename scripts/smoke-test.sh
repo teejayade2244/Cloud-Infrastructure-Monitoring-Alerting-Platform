@@ -1,28 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
-# Expects EXPECTED_TAG in the environment (the image tag the calling job just deployed) and a
-# kubeconfig already authenticated against inframonitor-aks (azure/login + kubelogin
-# convert-kubeconfig -l azurecli, done by the calling workflow step before this runs).
-#
-# Environment-agnostic by design - optional inputs, each defaulting to events-service/staging's
-# values so existing callers (events-service-ci.yml's smoke-test-staging job) keep working
-# unchanged:
-#   NAMESPACE          K8s namespace the pod/Deployment live in.
-#   ARGOCD_APP_NAME     The ArgoCD Application to force-refresh - a DIFFERENT resource per
-#                        environment (events-service-staging vs events-service-production), not
-#                        implied by NAMESPACE alone, so it's its own parameter rather than derived.
-#   ENVIRONMENT_LABEL   Written into the synthetic test document's own "environment" field.
-#                        Staging and production share one Cosmos account but use separate
-#                        databases, so this only affects the data written INTO whichever database
-#                        the pod's own env vars already point at - it doesn't route the write
-#                        anywhere.
-#   SERVICE_NAME        Both the Deployment name / pod label (app=$SERVICE_NAME) AND which
-#                        write/cleanup logic below applies (see verify_write_* below) - added for
-#                        incidents-service. Genuinely does double duty: which K8s resources to
-#                        poll for and which API schema to speak are the same underlying "which
-#                        service is this" fact, not two independent things that happen to share a
-#                        value.
 NAMESPACE="${NAMESPACE:-inframonitor}"
 ARGOCD_APP_NAME="${ARGOCD_APP_NAME:-events-service-staging}"
 ENVIRONMENT_LABEL="${ENVIRONMENT_LABEL:-staging}"
@@ -33,28 +10,12 @@ if [ "$SERVICE_NAME" != "events-service" ] && [ "$SERVICE_NAME" != "incidents-se
   exit 1
 fi
 
-# Response bodies + a summary go here instead of /tmp, so the calling workflow step can upload
-# this whole directory as a build artifact (actions/upload-artifact, if: always()) - the evidence
-# a run actually produced, not just its pass/fail conclusion, kept around after the runner is gone.
 EVIDENCE_DIR="smoke-test-evidence"
 mkdir -p "$EVIDENCE_DIR"
 
-# Registered here, before anything that can fail, rather than after the polling loops - so
-# summary.json (and whatever response bodies exist) always gets written, even if the failure was
-# in the ArgoCD refresh or either poll loop below, not just a late-stage failure. Combined into
-# one handler (rather than a separate trap per concern) because bash's `trap` replaces any
-# previous handler for the same signal - a second `trap ... EXIT` call would silently drop this
-# one instead of adding to it. Each branch is a no-op until the thing it references actually
-# gets set - safe under set -u via the ${VAR:-} guards throughout.
 cleanup() {
   local exit_code=$?
   if [ -n "${WRITE_ID:-}" ]; then
-    # events-service and incidents-service genuinely differ here, not just by parameter:
-    # events-service has a real DELETE /events/:id route, so cleanup removes the record
-    # entirely. incidents-service has no delete endpoint at all (confirmed against the real
-    # controller) - the closest genuine equivalent using only endpoints that actually exist is
-    # PATCH-ing it to a terminal status, which leaves the record in Cosmos DB but clearly closed
-    # out rather than deleted.
     case "$SERVICE_NAME" in
       events-service)
         echo "Cleaning up smoke-test event ${WRITE_ID}..."
@@ -205,7 +166,7 @@ echo "Process liveness confirmed: pod ${POD} (image tag ${EXPECTED_TAG}) answers
 TEST_SOURCE="ci-smoke-test-${GITHUB_RUN_ID:-manual}"
 
 # events-service and incidents-service have genuinely different write schemas and response
-# shapes (confirmed against their real routes/controllers, not assumed) - not something that
+# shapes (confirmed against their real routes/controllers) - not something that
 # collapses into shared logic via parameters alone, so each gets its own function. What's
 # actually shared is everything ABOVE this point (ArgoCD refresh, both polls, port-forward,
 # /health) plus the trap/evidence/summary machinery - genuine infrastructure, not domain logic.

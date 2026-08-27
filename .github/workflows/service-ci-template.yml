@@ -160,22 +160,22 @@ on:
     secrets:
       azure_client_id_ci:
         description: "Client ID of the identity used by integration-tests to authenticate to whatever real external systems it depends on."
-        required: true
+        required: false
       azure_client_id_cd:
         description: "Client ID of the identity used by push-image to authenticate to the container registry."
-        required: true
+        required: false
       azure_client_id_smoke:
         description: "Client ID of the identity used by smoke-test-staging to authenticate to the Kubernetes cluster and verify the deployment."
-        required: true
+        required: false
       gitops_pat:
         description: "Token with write access to the GitOps repository, used to commit the new image tag (and, on rollback, a prior one)."
-        required: true
+        required: false
       azure_tenant_id:
         description: "Tenant ID shared by all three identities above."
-        required: true
+        required: false
       azure_subscription_id:
         description: "Subscription ID shared by all three identities above."
-        required: true
+        required: false
 
 # Restrictive default; sast overrides to add security-events: write, same as both original files.
 permissions:
@@ -341,11 +341,6 @@ jobs:
       (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
     runs-on: ubuntu-latest
     container: ${{ inputs.build_container_image }}
-    # Confirmed for real: this job silently hung for the full 6-hour GitHub Actions default
-    # before being auto-cancelled, with zero warning - a job-level ceiling well below that
-    # default means a genuine hang now fails loudly in minutes, not hours. 15 minutes covers up
-    # to 2 attempts at 5 minutes each (see the retry loop below) plus normal setup overhead,
-    # against a real baseline runtime of ~60s.
     timeout-minutes: 15
     permissions:
       id-token: write

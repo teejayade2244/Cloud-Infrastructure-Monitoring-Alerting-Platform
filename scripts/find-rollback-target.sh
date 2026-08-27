@@ -1,31 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Shared by rollback-staging (events-service-ci.yml) and rollback-production
-# (events-service-production-promotion.yml) - walks backward through the most recent completed
-# runs of a workflow, most recent first, looking for the first one whose smoke test job
-# genuinely succeeded. This is NOT "one commit prior" - it's "the most recent deployment that
-# was itself actually verified," which can be several commits back if intervening ones broke
-# something. If nothing verified-good turns up within the lookback window, this fails loudly and
-# writes no output - a rollback target that can't be verified must never be guessed at.
-#
-# Uses the exact same gh run list / gh run view --json jobs query mechanism as
-# verify-staging-smoke-test.sh, including the same reliance on the jobs endpoint's default
-# (no filter param) behavior of returning a job's LATEST attempt - empirically verified earlier
-# tonight against a run that genuinely failed once and was later re-run to success, where the
-# default query correctly surfaced the success, never the stale failure.
-#
-# Where staging and production genuinely differ (not just parameters, a different mechanism):
-# a staging run is push-triggered, so its image tag IS ${headSha::7} - exact by construction,
-# same correspondence verify-staging-smoke-test.sh already relies on. A production run is
-# workflow_dispatch-triggered with image_tag as a manual input; empirically confirmed (checked
-# the full run object, and gh run view's complete --json field list) that GitHub's Actions API
-# exposes NO input-value field for a completed run at all - head_sha there is just whatever
-# commit main was on at dispatch time, unrelated to the promoted tag. So for production, the
-# tag is instead read from the smoke-test-evidence-production artifact's summary.json that
-# Smoke Test (production) already uploads - confirmed empirically against a real run, not
-# assumed - since that's the only reliable record of which tag a given run actually tested.
-
 WORKFLOW_FILE="${WORKFLOW_FILE:?WORKFLOW_FILE must be set}"
 SMOKE_TEST_JOB_NAME="${SMOKE_TEST_JOB_NAME:?SMOKE_TEST_JOB_NAME must be set}"
 TAG_SOURCE="${TAG_SOURCE:?TAG_SOURCE must be set (head_sha or artifact)}"

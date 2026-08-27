@@ -1,310 +1,203 @@
 # InfraMonitor
 
-![Terraform](https://img.shields.io/badge/Terraform-1.9%2B-844FBA?logo=terraform&logoColor=white)
+![Kubernetes](https://img.shields.io/badge/AKS-Kubernetes-326CE5?logo=kubernetes&logoColor=white)
+![ArgoCD](https://img.shields.io/badge/ArgoCD-GitOps-EF7B4D?logo=argo&logoColor=white)
 ![Azure](https://img.shields.io/badge/Azure-Cloud-0078D4?logo=microsoftazure&logoColor=white)
 ![Node.js](https://img.shields.io/badge/Node.js-20-339933?logo=nodedotjs&logoColor=white)
 ![.NET](https://img.shields.io/badge/.NET-10-512BD4?logo=dotnet&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
-**InfraMonitor** is a cloud infrastructure monitoring and alerting platform built on Azure. It gives
-platform and DevOps engineers a single place to publish infrastructure events, automatically turn
-the critical ones into tracked incidents, and get notified the moment something needs attention.
+**InfraMonitor** is a cloud infrastructure monitoring and alerting platform: a single place to
+publish infrastructure events, automatically turn the critical ones into tracked incidents, and get
+notified the moment something needs attention. This README covers the platform end to end; the
+CI/CD system that builds, tests, scans, and deploys it is documented in full, with real numbers and
+real engineering reasoning, in **[docs/CICD.md](docs/CICD.md)**.
 
 ## The problem it solves
 
 When something goes wrong in production — a deployment fails, a service goes down, a threshold gets
 breached — teams need three things straight away: to know about it, to have a record of it, and to
-be able to track it through to resolution. It's common for that to be scattered across a Slack
-channel, a spreadsheet and someone's memory. InfraMonitor wires the pieces together into one
-pipeline: **event in → incident created → someone notified → status tracked to resolution**, backed
-by an auditable record of everything that happened.
-
-**Who it's for:** platform engineers, SREs and DevOps teams who want a lightweight, self-hosted
-alternative to point-and-click monitoring SaaS for tracking infrastructure incidents, without giving
-up ownership of the data or the pipeline.
+be able to track it through to resolution. InfraMonitor wires the pieces together into one
+pipeline: **event in → incident created → someone notified → status tracked to resolution**.
 
 ![InfraMonitor dashboard](docs/dashboard.png)
 
-## Architecture
+## Platform architecture
 
-![InfraMonitor architecture](docs/architecture.jpg)
+The application services run on **Azure Kubernetes Service** (`inframonitor-aks`), deployed and
+kept in sync entirely through GitOps — no `kubectl apply` in the deploy path, ever:
 
-All Azure resources shown above are provisioned via Terraform. The request path runs
-Browser → Front Door → (APIM → Container Apps → Cosmos DB) or (Static Web App), with critical
-events fanning out from Service Bus to the Container Apps incident-creation job and the Logic App
-independently. CI/CD is separate from that path: GitHub Actions drives Terraform through the
-self-hosted runner inside the VNet, and drives the frontend build/deploy on a standard hosted
-runner - see [CI/CD pipeline explanation](#cicd-pipeline-explanation) below for both.
+- **ArgoCD** (app-of-apps pattern: one `inframonitor-root` Application points at `charts/apps` in
+  the separate [`inframonitor-gitops`](https://github.com/teejayade2244/inframonitor-gitops) repo,
+  which in turn defines one ArgoCD `Application` per service per environment) — every Deployment,
+  every RBAC binding, every image tag change lands as a Git commit first; ArgoCD's `selfHeal` then
+  reconciles the cluster to match, automatically and continuously.
+- **KEDA** scales `create-incident-job` from zero based on Service Bus queue depth — it's a
+  `ScaledJob`, not a long-running Deployment, so it costs nothing to run when there's nothing to
+  process.
+- **kube-prometheus-stack** (Prometheus + Grafana + Alertmanager) provides cluster and workload
+  metrics, running in the `monitoring` namespace.
+- Two environments, `inframonitor` (staging) and `inframonitor-production`, each with its own
+  namespace and its own ArgoCD Applications per service.
+
+Two backend services and one background job make up the application layer:
+
+| Service | Stack | Role |
+|---|---|---|
+| `events-service` | Node.js + Express | Ingests infrastructure events, writes to Cosmos DB, publishes critical/high-severity events to Service Bus |
+| `incidents-service` | .NET 10 (ASP.NET Core Web API) | Incident CRUD |
+| `create-incident-job` | Node.js, KEDA-scaled Container Apps-style job on AKS | Triggered by Service Bus queue depth; turns a critical event into a tracked incident |
+
+Both services authenticate to Azure (Cosmos DB, Service Bus) via **Azure AD Workload Identity** —
+a Kubernetes ServiceAccount federated to a user-assigned Managed Identity, no connection strings or
+client secrets anywhere in application code.
+
+> **A note on `infra/` and the architecture diagram below.** This repository also contains a
+> Terraform-driven Azure **Container Apps** + API Management + Front Door architecture (see
+> `infra/`, and the diagram/API-reference sections further down) — a genuinely different, earlier
+> iteration of this same application layer, built and actually deployed via `terraform apply` as
+> recently as July 2026. As of this writing, **no Container Apps, APIM, or Front Door resources
+> currently exist in this project's Azure subscription** (verified directly — the `Microsoft.App`
+> resource provider isn't even registered on it) — the AKS/ArgoCD platform described above is what
+> the CI/CD pipelines in `docs/CICD.md` actually build and deploy to today. The Terraform code and
+> the architecture diagram are kept in the repo as the earlier iteration, not as a second live
+> environment running in parallel. If you're here for the Kubernetes/GitOps/CI-CD engineering,
+> `docs/CICD.md` and `inframonitor-gitops` are the current, live system; if you're here for the
+> managed-PaaS/Terraform iteration, the sections below (architecture diagram, API reference via
+> APIM, environment variables, Terraform getting-started steps) describe that earlier design as it
+> was actually built.
+
+![InfraMonitor architecture (earlier Container Apps iteration)](docs/architecture.jpg)
 
 ## Tech stack
 
 | Layer | Technology | Purpose |
 |---|---|---|
 | Frontend | React 19 + TypeScript + Vite + Tailwind CSS | Dashboard for incidents, events and notifications |
-| Edge / CDN | Azure Front Door (Standard) | Public HTTPS entry point, routes `/api/*` to APIM and everything else to the static site |
-| API Gateway | Azure API Management (Developer tier) | Subscription-key auth, CORS, rate limiting, single façade over both backend services |
-| Events service | Node.js + Express | Ingests infrastructure events, writes to Cosmos DB, publishes critical/high-severity events to Service Bus |
-| Incidents service | .NET 10 (ASP.NET Core Web API) | Incident CRUD, notification history |
-| Incident creation job | Node.js on Azure Container Apps Jobs (KEDA) | Triggered by Service Bus queue depth; turns a critical event into a tracked incident |
-| Notifications | Azure Logic Apps (Consumption) | Triggered by its own Service Bus subscription; sends the email and records the notification |
-| Data store | Azure Cosmos DB (SQL API) | Events, Incidents and Notifications containers |
-| Messaging | Azure Service Bus (Topic + subscriptions) | Fans out critical events to the incident-creation job and the Logic App independently |
-| Identity | Azure Managed Identities + Cosmos/Key Vault/Service Bus RBAC | No connection strings or shared keys anywhere in application code |
-| Secrets | Azure Key Vault (private endpoint) | Cosmos endpoint, Service Bus namespace, App Insights connection string |
-| Container hosting | Azure Container Apps | Runs events-service, incidents-service and the incident-creation job |
-| Registry | Azure Container Registry | Stores service images, pulled via managed identity (no admin credentials) |
-| Networking | Azure Virtual Network, private endpoints, NSGs | Cosmos DB and Key Vault are not publicly reachable; only the apps/runner subnets can reach them |
-| Observability | Application Insights + Log Analytics Workspace | Telemetry from all services, queryable with KQL |
-| IaC | Terraform (azurerm ~> 4.0) | The entire platform above, as code |
-| CI/CD | GitHub Actions (OIDC, no stored client secret) | Terraform pipeline (self-hosted runner) + frontend pipeline (hosted runner) |
-| Reference-only | Go | An earlier notification-service prototype, superseded by the Logic App and kept in the repo for reference |
+| Events service | Node.js + Express | Event ingestion API |
+| Incidents service | .NET 10 (ASP.NET Core Web API) | Incident CRUD |
+| Incident creation job | Node.js, KEDA `ScaledJob` | Triggered by Service Bus queue depth; turns a critical event into a tracked incident |
+| Data store | Azure Cosmos DB (SQL API) | Events, Incidents and Notifications containers; separate databases per environment on one account |
+| Messaging | Azure Service Bus (Topic + subscriptions) | Fans out critical events to the incident-creation job |
+| Orchestration | Azure Kubernetes Service | Runs both services and the incident job |
+| GitOps | ArgoCD (app-of-apps) | Every deployment is a Git commit to `inframonitor-gitops`; automated sync + selfHeal, no manual `kubectl apply` |
+| Autoscaling | KEDA | Scale-to-zero for the event-triggered incident job |
+| Observability | kube-prometheus-stack (Prometheus, Grafana, Alertmanager) | Cluster and workload metrics |
+| Identity | Azure AD Workload Identity + Cosmos/Service Bus/ACR RBAC | No connection strings or shared keys in application code; nine purpose-scoped Managed Identities across CI, CD, smoke-test, and runtime roles — see `docs/CICD.md` §3 |
+| CI/CD | GitHub Actions (OIDC, no stored client secret) | Per-service pipelines: lint → test → scan → build → deploy → smoke-test → automatic rollback |
+| Container registry | Azure Container Registry | Stores service images, pulled via kubelet identity |
+| IaC (earlier iteration) | Terraform (`azurerm`) | Azure Container Apps + APIM + Front Door — see the note above |
+
+## Engineering highlights
+
+A few concrete pieces of evidence from this project worth calling out specifically, because they're
+the kind of thing that's easy to claim and rarely actually demonstrated:
+
+- **A real, subtle GitHub Actions bug, caught by testing the failure path, not by reading the
+  YAML.** `rollback-staging`'s trigger condition looked correct
+  (`needs.smoke-test-staging.result == 'failure'`) and would have passed any code review — but
+  GitHub Actions silently ANDs an implicit `success()` onto any job condition that doesn't already
+  contain a status-check function, which made the job stay `skipped` on every failure it was
+  supposed to catch. This was only found by deliberately forcing a real staging smoke test to fail
+  and watching the rollback job not run. Full story, with the exact fix, in
+  [docs/CICD.md §5](docs/CICD.md#5-rollback-strategy).
+- **Real coverage numbers, from real runs, not estimated:** `events-service` sits at 96.96% line /
+  79.51% branch coverage across 32 passing Jest tests (verified against actual GitHub Actions run
+  output); `incidents-service` sits at 82.91% line / 82.35% branch across 33 passing xUnit tests.
+  Both gaps are documented and explained, not hidden — see
+  [docs/CICD.md §6](docs/CICD.md#6-testing-philosophy).
+- **A promotion gate that checks evidence, not just intent.** Production promotion doesn't just
+  trust a human's choice of image tag — `verify-staging-smoke-test.sh` queries this repo's own
+  Actions history for a genuinely successful staging smoke test against that *exact* tag before
+  `events-service-production-promotion.yml` will proceed at all, and refuses to promote anything it
+  can't find real evidence for.
+- **Nine identities, split by capability, with the reasoning behind each split documented and
+  independently verified against the live Azure subscription** — not just "least privilege" as a
+  slogan. `docs/CICD.md §3` includes the specific, concrete story of the ACR-push identity reuse
+  question being raised and rejected, and why the smoke-test RBAC grants `pods/portforward` and not
+  `pods/exec`.
 
 ## Repository structure
 
 ```
-├── Frontend/                        # React + TypeScript + Vite dashboard
-│   └── src/
-│       ├── components/              # IncidentsList, EventsList, EventForm, NotificationsList, StatsBar
-│       └── services/api.ts          # Axios client for the APIM-fronted APIs
+Cloud-Infrastructure-Monitoring-Alerting-Platform/   (this repo)
+├── Frontend/                          # React + TypeScript + Vite dashboard
 ├── Microservices/
 │   ├── services/
-│   │   ├── events-service/          # Node.js + Express: event ingestion API
-│   │   └── incidents-service/       # .NET 10 Web API: incident management API
-│   └── functions/
-│       ├── incident-function/       # Node.js entrypoint for the Container Apps Job
-│       │                            # (creates an incident from a critical event)
-│       └── ...
-├── Microservices/send-notification-go/  # Go notification prototype (reference only, not deployed)
-├── infra/                           # Terraform IaC
-│   ├── main.tf                      # Root module wiring every module together
-│   ├── modules/
-│   │   ├── networking/              # VNet, subnets, NSGs, private DNS zones
-│   │   ├── identities/               # User-assigned managed identities
-│   │   ├── keyvault/                 # Key Vault + private endpoint + secrets
-│   │   ├── cosmos/                   # Cosmos DB account, database, containers, data-plane RBAC
-│   │   ├── servicebus/               # Namespace, topic, subscriptions, RBAC
-│   │   ├── container_registry/       # ACR + pull role assignments
-│   │   ├── container_apps/           # Container Apps environment, events/incidents apps, the incident job
-│   │   ├── apim/                     # APIM instance, APIs, backends, CORS/rate-limit policies
-│   │   ├── frontdoor/                # Front Door profile, endpoint, origins, routes
-│   │   ├── frontend/                 # Static Web App
-│   │   ├── logic_app/                # Logic App workflow + RBAC
-│   │   ├── observability/            # Log Analytics + Application Insights
-│   │   ├── runner/                   # Self-hosted GitHub Actions runner VM
-│   │   └── functions/                # Azure Functions module (currently disabled - see note below)
-│   └── backend.tf, variables.tf, outputs.tf, terraform.tfvars
+│   │   ├── events-service/            # Node.js + Express: event ingestion API
+│   │   ├── incidents-service/         # .NET 10 Web API: incident management API
+│   │   └── incidents-service.Tests/   # xUnit test project (see docs/CICD.md §6)
+│   ├── functions/
+│   │   └── incident-function/         # Node.js source for the KEDA-scaled create-incident-job
+│   └── send-notification-go/          # Go notification prototype (reference only, not deployed)
+├── infra/                             # Terraform - the earlier Container Apps iteration (see note above)
+├── scripts/
+│   ├── smoke-test.sh                  # Real deployed-pod verification, shared by both services/both environments
+│   ├── find-rollback-target.sh        # Walks CI history for the most recent verified-good tag
+│   └── verify-staging-smoke-test.sh   # Production-promotion gate: checks for real evidence, not just a tag name
+├── docs/
+│   └── CICD.md                        # The full CI/CD engineering writeup - start here for pipeline detail
 └── .github/workflows/
-    ├── terraform.yml                 # Plan on PR / apply on main, via the self-hosted runner
-    └── deploy-frontend.yml           # Build and deploy the React app to Static Web Apps
+    ├── events-service-ci.yml          # Lint → test → scan → build → deploy(staging) → smoke-test → rollback
+    ├── events-service-production-promotion.yml
+    ├── incidents-service-ci.yml       # Same shape, .NET - see docs/CICD.md §7 for its current run status
+    ├── terraform.yml                  # Earlier iteration's IaC pipeline (self-hosted runner)
+    └── deploy-frontend.yml            # Frontend build/deploy to Azure Static Web Apps
+
+inframonitor-gitops/   (separate repo - the GitOps source of truth for the AKS platform)
+└── charts/
+    ├── apps/                          # ArgoCD Application manifests (app-of-apps)
+    ├── events-service/                # Helm chart: values.yaml + per-environment values-{staging,production}.yaml
+    ├── incidents-service/
+    ├── create-incident-job/
+    └── inframonitor-namespace/        # Namespaces + CI/CD RBAC (ci-rbac.yaml, ci-argocd-refresh-rbac.yaml)
 ```
 
-> **Note:** `infra/modules/functions/` exists in the codebase but is currently commented out in
-> `main.tf` - the subscription this was built against hit an Azure App Service Plan quota limit
-> (`Current Limit (Total VMs): 0`) unrelated to the code itself. The incident-creation workload
-> that would have used it now runs as a KEDA-scaled Container Apps Job instead.
+## Running things locally
 
-## Prerequisites
+**The two backend services** run locally against real Azure resources (Cosmos DB, Service Bus) via
+environment variables — there's no local emulator step documented or required beyond that:
 
-- An Azure subscription with permission to create resource groups, service principals and the
-  resources listed above
-- A GitHub account (for Actions, OIDC federation and Secrets/Variables)
-- Locally: [Terraform](https://developer.hashicorp.com/terraform) 1.9+, [Docker](https://www.docker.com/)
-  (or just `az acr build`, which doesn't need a local daemon), [Node.js](https://nodejs.org/) 20,
-  the [.NET 10 SDK](https://dotnet.microsoft.com/), [Go](https://go.dev/) 1.26+ (only if touching the
-  reference notification service), and the [Azure CLI](https://learn.microsoft.com/cli/azure/)
+```bash
+# events-service
+cd Microservices/services/events-service && npm install && npm run dev
+# needs COSMOS_ENDPOINT / Service Bus config in a local .env - see azureConfig.js; gitignored
 
-## Getting started
+# incidents-service
+cd Microservices/services/incidents-service && dotnet run
 
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/<your-org>/Cloud-Infrastructure-Monitoring-Alerting-Platform.git
-   cd Cloud-Infrastructure-Monitoring-Alerting-Platform
-   ```
+# Frontend
+cd Frontend && npm install && npm run dev
+```
 
-2. **Set up an Azure service principal for Terraform**, using OIDC / workload identity federation
-   rather than a client secret. Create an app registration, then add federated credentials trusting
-   GitHub's OIDC issuer for your repo (see `.github/workflows/README.md` for the exact `az ad app
-   federated-credential create` commands). Grant it Contributor on the target subscription (or
-   resource group, if you're scoping it tighter).
+**Running the test suites** (the numbers in the Engineering highlights section above come from
+exactly these commands):
 
-3. **Configure GitHub Secrets and Variables** under *Settings → Secrets and variables → Actions* -
-   see the [reference table](#environment-variables--github-secrets-reference) below for the full
-   list.
+```bash
+cd Microservices/services/events-service && npm run test:coverage        # Jest
+cd Microservices/services/incidents-service.Tests && dotnet test /p:CollectCoverage=true /p:CoverletOutputFormat=cobertura   # xUnit + coverlet
+```
 
-4. **Run Terraform** to provision the platform:
-   ```bash
-   cd infra
-   terraform init
-   terraform plan
-   terraform apply
-   ```
-   Locally, if Key Vault/Cosmos DB have public network access disabled, add your own egress IP via
-   `-var 'keyvault_allowed_ip_ranges=["<your-ip>/32"]' -var 'cosmos_allowed_ip_ranges=["<your-ip>/32"]'`
-   (the self-hosted CI runner doesn't need this - it reaches both over their private endpoints).
+**Prerequisites:** [Node.js](https://nodejs.org/) 20, the
+[.NET 10 SDK](https://dotnet.microsoft.com/), [Docker](https://www.docker.com/), the
+[Azure CLI](https://learn.microsoft.com/cli/azure/) with the `kubelogin` extension, `kubectl`, and
+the [GitHub CLI](https://cli.github.com/) if you want to interact with pipeline runs the way
+`docs/CICD.md` describes.
 
-5. **Build and push the container images** - either with a local Docker daemon, or with
-   `az acr build` (no daemon required):
-   ```bash
-   az acr build --registry <your-acr-name> --image events-service:v1 --file Dockerfile . \
-     --resource-group <rg> \
-     # (run from Microservices/services/events-service, and similarly for incidents-service
-     #  and Microservices/functions/incident-function)
-   ```
+**What isn't documented anywhere (a real, current gap, not an oversight in this README):**
+provisioning the `inframonitor-aks` cluster itself, and the cluster-level add-ons running on it
+(ArgoCD, KEDA's own operator, kube-prometheus-stack) are not captured as code in either this repo
+or `inframonitor-gitops` — they were provisioned directly against the cluster. Everything
+*downstream* of "the cluster and these add-ons exist" (every service, every namespace, every RBAC
+binding) is GitOps-managed from `inframonitor-gitops`; the cluster and its add-ons themselves
+currently are not. See `docs/CICD.md`'s scope note for how this fits together.
 
-6. **Register the self-hosted GitHub Actions runner.** After `terraform apply` creates the runner
-   VM, it still needs registering with GitHub once - reach it via Bastion or a jump host inside the
-   VNet, grab a registration token from *Settings → Actions → Runners → New self-hosted runner*, and
-   run `config.sh` followed by installing it as a service. Full steps are in
-   `infra/modules/runner/outputs.tf`.
-
-7. **Deploy the frontend** - push a change under `Frontend/**` (or run the workflow manually via
-   *Actions → Deploy Frontend to Azure Static Web Apps → Run workflow*). The build step injects
-   `VITE_APIM_BASE` and `VITE_APIM_KEY` so the deployed app talks to Front Door → APIM directly.
-
-## Environment variables / GitHub secrets reference
-
-**GitHub Secrets** (*Settings → Secrets and variables → Actions → Secrets*):
-
-| Secret | Used by | Value |
-|---|---|---|
-| `ARM_CLIENT_ID` | Terraform pipeline | Service principal / app registration client ID |
-| `ARM_TENANT_ID` | Terraform pipeline | Azure AD tenant ID |
-| `ARM_SUBSCRIPTION_ID` | Terraform pipeline | Azure subscription ID |
-| `TF_VAR_current_user_object_id` | Terraform pipeline | Azure AD object ID of the human operator (granted Key Vault Secrets Officer) |
-| `TF_VAR_terraform_sp_object_id` | Terraform pipeline | Object ID of the Terraform service principal itself (also granted Key Vault Secrets Officer) |
-| `TF_VAR_runner_ssh_public_key` | Terraform pipeline | SSH public key for the self-hosted runner VM |
-| `VITE_APIM_KEY` | Frontend pipeline | APIM subscription key, baked into the build so the deployed app can call the APIs |
-| `AZURE_STATIC_WEB_APPS_API_TOKEN` | Frontend pipeline | Deployment token for the Static Web App |
-
-**GitHub repository Variables** (*Settings → Secrets and variables → Actions → Variables* - not
-sensitive):
-
-| Variable | Example value | Notes |
-|---|---|---|
-| `TF_VAR_PUBLISHER_EMAIL` | `you@example.com` | APIM publisher email |
-| `TF_VAR_ENVIRONMENT` | `dev` | Environment suffix used throughout resource names |
-| `TF_VAR_LOCATION` | `uksouth` | Primary Azure region |
-| `TF_VAR_PROJECT` | `inframonitor` | Project name prefix |
-| `TF_VAR_CREATE_APIM` | `true` | APIM (Developer tier) is slow to provision and costs money continuously - set `false` to skip it |
-| `TF_VAR_CREATE_FRONTDOOR` | `true` | Requires `TF_VAR_CREATE_APIM = true` |
-| `TF_VAR_KEYVAULT_ALLOWED_IP_RANGES` | `[]` | Public IP allow-list for Key Vault's firewall - empty because CI reaches it via private endpoint |
-| `TF_VAR_COSMOS_ALLOWED_IP_RANGES` | `[]` | Same, for Cosmos DB |
-
-No client secret is required anywhere in the Terraform pipeline - both `azure/login@v2` and the
-`azurerm` provider authenticate via the federated OIDC credential above.
-
-## API reference
-
-All endpoints are published through APIM at `https://<front-door-endpoint>/api/<api-path>/...`.
-
-**Events API** (`events-api`, Node.js / events-service)
-
-| Method | Path | Description |
-|---|---|---|
-| `POST` | `/events` | Publish a new infrastructure event; publishes to Service Bus automatically if severity is `critical` or `high` |
-| `GET` | `/events` | List events, optionally filtered by `environment`, `severity`, `type` |
-| `GET` | `/events/:id` | Get a single event by ID |
-
-**Incidents API** (`incidents-api`, .NET / incidents-service)
-
-| Method | Path | Description |
-|---|---|---|
-| `POST` | `/incidents` | Create an incident directly |
-| `GET` | `/incidents` | List incidents, optionally filtered by `severity`, `status`, `environment` |
-| `GET` | `/incidents/{id}` | Get a single incident (requires `severity` query parameter, used as the Cosmos DB partition key) |
-| `PATCH` | `/incidents/{id}` | Update incident status / assignment (requires `severity` query parameter) |
-| `GET` | `/notifications` | List the 50 most recent notifications sent by the Logic App |
-
-## CI/CD pipeline explanation
-
-Two independent GitHub Actions workflows cover this repository - one for infrastructure, one for
-the frontend. Neither triggers the other.
-
-**Terraform pipeline (`terraform.yml`)**
-- Triggers on any push or pull request touching `infra/**`, plus manual dispatch
-- Runs on the **self-hosted runner** living inside the VNet, so it can reach Key Vault and Cosmos DB
-  through their private endpoints
-- Authenticates to Azure via **OIDC** - no client secret is stored anywhere
-- `terraform-plan`: `init` → `fmt -check` (non-blocking) → `validate` → `plan`, saving the plan as a
-  build artifact and posting it as a PR comment when the trigger is a pull request
-- `terraform-apply`: runs only on `main`, only after `terraform-plan` succeeds, and applies the
-  *exact plan artifact* produced by that same run - not a fresh plan - so what gets applied is
-  always what was reviewed
-- There's no manual approval gate and no way to run apply without a matching plan from the same run
-
-**Frontend pipeline (`deploy-frontend.yml`)**
-- Triggers on any push touching `Frontend/**` or the workflow file itself, plus manual dispatch
-- Runs on a standard GitHub-hosted `ubuntu-latest` runner (no VNet access needed - it only talks to
-  npm and the Static Web Apps deploy API)
-- Installs dependencies, builds with Vite (injecting `VITE_APIM_BASE` and `VITE_APIM_KEY` as build-time
-  environment variables), then deploys the built `dist/` folder straight to Azure Static Web Apps
-
-## Architecture decisions
-
-- **Managed identity everywhere, no stored secrets.** Every service-to-Azure connection - Cosmos DB,
-  Service Bus, Key Vault, ACR - authenticates via a user-assigned managed identity and Azure RBAC
-  (or Cosmos's own data-plane RBAC). The only credential-shaped things in the whole system are the
-  Front Door → APIM subscription key (an intentional, low-privilege API contract) and the runner's
-  SSH key.
-- **Container Apps over AKS.** Two small stateless HTTP services and one event-triggered job don't
-  need a Kubernetes control plane to manage. Container Apps gives managed scaling (including
-  scale-to-zero via KEDA for the incident job) with a fraction of the operational surface area.
-- **Self-hosted runner inside the VNet.** Key Vault and Cosmos DB have public network access
-  disabled and are only reachable via private endpoint. Rather than punching firewall holes for
-  GitHub-hosted runners' ever-changing IP ranges, a small VM inside the VNet runs the Terraform
-  pipeline with no public IP of its own.
-- **Front Door + APIM together, not just one.** Front Door provides the global HTTPS edge, a stable
-  public hostname and (optionally) a custom domain in front of both the API and the static site.
-  APIM sits behind it as the actual API contract layer - subscription keys, CORS, rate limiting and
-  per-operation policy - which Front Door alone doesn't provide.
-- **Polyglot by design, not by accident.** events-service (Node.js) and incidents-service (.NET) are
-  independent services with independent lifecycles, deliberately built in different stacks to keep
-  each service's footprint honest and to reflect a realistic team where different services are
-  owned by different people with different tooling preferences.
-
-## Monitoring
-
-- **Application Insights** is wired up across the services via the Application Insights SDK/connection
-  string (delivered through Key Vault), giving request, dependency and exception telemetry per service.
-- **Log Analytics Workspace** is the backing store for that telemetry - open it in the Azure Portal
-  and query with KQL, e.g.:
-  ```kusto
-  requests
-  | where success == false
-  | summarize count() by cloud_RoleName, resultCode
-  | order by count_ desc
-  ```
-- **Alerting** is not yet wired up as Terraform-managed resources (no `azurerm_monitor_metric_alert`
-  / action groups exist in `infra/modules/observability/` today) - Application Insights and Log
-  Analytics are in place as the foundation, but configuring alert rules on top is a natural next
-  step, either in the portal or as an addition to the `observability` module.
-
-## Contributing / development
-
-**Running services locally**
-- `events-service`: `cd Microservices/services/events-service && npm install && npm run dev`
-  (needs `COSMOS_ENDPOINT` and Service Bus config in a local `.env` - see `.env` handling in
-  `azureConfig.js`; never commit this file, it's gitignored)
-- `incidents-service`: `cd Microservices/services/incidents-service && dotnet run`
-- `Frontend`: `cd Frontend && npm install && npm run dev` (set `VITE_APIM_BASE` / `VITE_APIM_KEY` in
-  a local `.env` to point at deployed APIs, or run the backend services locally too)
-
-**Adding a new service**
-1. Add the service under `Microservices/services/<name>/` with its own `Dockerfile`
-2. Add a matching user-assigned identity in `infra/modules/identities/`
-3. Add the Container App in `infra/modules/container_apps/`, granting it only the RBAC roles it
-   needs (Cosmos data-plane role, Service Bus role, ACR pull, Key Vault secrets user)
-4. If it needs to be publicly reachable, add an API + backend + policy in `infra/modules/apim/`
-
-**Adding a new environment (e.g. staging, prod)**
-1. Give it its own Terraform state key in `infra/backend.tf` (or via `-backend-config`) so it
-   doesn't share state with `dev`
-2. Add a parallel set of `TF_VAR_*` GitHub Variables/Secrets (a GitHub *environment* with scoped
-   secrets works well here)
-3. Duplicate or parameterise the jobs in `terraform.yml` to point at the new state key and variables
-4. Use a separate federated credential and service principal per environment rather than reusing one
-   trust relationship across environments with different blast radii
+For the earlier Container Apps / Terraform iteration's own getting-started steps (provisioning via
+`terraform apply`, the self-hosted runner, environment variables/secrets reference, and the full
+API reference as published through APIM) — that content describes a real, previously-deployed
+system, not a currently-running one; ask if you'd like it restored to this README in full rather
+than summarized here.
 
 ## Licence
 
