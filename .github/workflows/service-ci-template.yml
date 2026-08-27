@@ -162,8 +162,8 @@ on:
         description: "Client ID of the identity used by integration-tests to authenticate to whatever real external systems it depends on."
         required: false
       azure_client_id_cd:
-        description: "Client ID of the identity used by push-image to authenticate to the container registry."
-        required: false
+        description: "Client ID of the identity used by push-image to authenticate to the container registry. push-image has no skip toggle - required for real, not just declared as such."
+        required: true
       azure_client_id_smoke:
         description: "Client ID of the identity used by smoke-test-staging to authenticate to the Kubernetes cluster and verify the deployment."
         required: false
@@ -171,11 +171,11 @@ on:
         description: "Token with write access to the GitOps repository, used to commit the new image tag (and, on rollback, a prior one)."
         required: false
       azure_tenant_id:
-        description: "Tenant ID shared by all three identities above."
-        required: false
+        description: "Tenant ID shared by all three identities above. Required, not optional - it's shared with azure_client_id_cd's login, and push-image (unlike integration-tests/smoke-test-staging) has no toggle that ever skips it."
+        required: true
       azure_subscription_id:
-        description: "Subscription ID shared by all three identities above."
-        required: false
+        description: "Subscription ID shared by all three identities above. Same reasoning as azure_tenant_id - required because push-image's login always needs it."
+        required: true
 
 # Restrictive default; sast overrides to add security-events: write, same as both original files.
 permissions:
