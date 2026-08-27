@@ -44,6 +44,10 @@ on:
         description: "Just the registry name push-image logs into, e.g. myregistry (the part of image_repository before .azurecr.io). Kept as its own input rather than parsed out of image_repository, since GitHub Actions expressions have no string-split function."
         required: true
         type: string
+      dockerfile_path:
+        description: "Full path to this service's own Dockerfile, e.g. services/my-service/Dockerfile."
+        required: true
+        type: string
       build_container_image:
         description: >-
           The container image lint-and-format, unit-tests, sast, and integration-tests all run
@@ -178,6 +182,15 @@ permissions:
   contents: read
 
 jobs:
+  dockerfile-lint:
+    name: Dockerfile Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run hadolint
+        run: docker run --rm -i hadolint/hadolint:v2.15.1 < ${{ inputs.dockerfile_path }}
+
   lint-and-format:
     name: Lint & Format Check
     runs-on: ubuntu-latest
@@ -246,7 +259,7 @@ jobs:
 
   sast:
     name: CodeQL (SAST)
-    needs: [lint-and-format, unit-tests, dependency-scan]
+    needs: [lint-and-format, unit-tests, dependency-scan, dockerfile-lint]
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
 
@@ -272,8 +285,20 @@ jobs:
 
   build-image:
     name: Docker Build
-    needs: [lint-and-format, unit-tests, dependency-scan]
-    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    needs: [lint-and-format, unit-tests, dependency-scan, dockerfile-lint, integration-tests]
+    # integration-tests is ALWAYS a needs: dependency (workflow_call's static job graph means it
+    # always exists), but for a caller with has_integration_tests: false it's skipped, not
+    # failed/succeeded - same reasoning as push-image's own needs.integration-tests handling
+    # below. always() means every OTHER needs entry now requires an explicit check too, not just
+    # this one - there's no shortcut once always() is present.
+    if: |
+      always() &&
+      needs.lint-and-format.result == 'success' &&
+      needs.unit-tests.result == 'success' &&
+      needs.dependency-scan.result == 'success' &&
+      needs.dockerfile-lint.result == 'success' &&
+      (needs.integration-tests.result == 'success' || needs.integration-tests.result == 'skipped') &&
+      (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
     runs-on: ubuntu-latest
     outputs:
       image_tag: ${{ steps.vars.outputs.image_tag }}
@@ -301,10 +326,27 @@ jobs:
 
   integration-tests:
     name: Integration Tests
-    needs: [lint-and-format, unit-tests, dependency-scan]
-    if: inputs.has_integration_tests && (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+    needs: [lint-and-format, unit-tests, dependency-scan, dockerfile-lint, sast]
+    # sast only runs on pull_request (see its own if:) - always skipped on a push to main, not
+    # failed/succeeded. always() means every other needs entry now needs an explicit check too,
+    # same reasoning as build-image's own needs.integration-tests handling above.
+    if: |
+      always() &&
+      inputs.has_integration_tests &&
+      needs.lint-and-format.result == 'success' &&
+      needs.unit-tests.result == 'success' &&
+      needs.dependency-scan.result == 'success' &&
+      needs.dockerfile-lint.result == 'success' &&
+      (needs.sast.result == 'success' || needs.sast.result == 'skipped') &&
+      (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
     runs-on: ubuntu-latest
     container: ${{ inputs.build_container_image }}
+    # Confirmed for real: this job silently hung for the full 6-hour GitHub Actions default
+    # before being auto-cancelled, with zero warning - a job-level ceiling well below that
+    # default means a genuine hang now fails loudly in minutes, not hours. 15 minutes covers up
+    # to 2 attempts at 5 minutes each (see the retry loop below) plus normal setup overhead,
+    # against a real baseline runtime of ~60s.
+    timeout-minutes: 15
     permissions:
       id-token: write
       contents: read
@@ -337,12 +379,32 @@ jobs:
         # command, works under any shell and can't be masked the same way - confirmed for real:
         # this exact step reported success on a run where 1 of 3 integration tests genuinely
         # failed.
+        #
+        # Retries up to twice, each bounded by the coreutils `timeout` command (confirmed
+        # present in every current caller's build_container_image - all Debian-based) rather
+        # than the whole job's 6-hour default - confirmed for real that this step can otherwise
+        # hang completely silently (a real Cosmos-side contention/connectivity issue, most
+        # likely from all three services' integration tests now running more tightly clustered
+        # under the sast -> integration-tests sequencing) with zero output until killed. A
+        # second attempt costs a few minutes against a real, transient failure; a genuine,
+        # reproducible test failure still fails after exhausting both attempts.
         run: |
           set +e
-          ${{ inputs.integration_test_command }} > test-results.txt 2>&1
-          TEST_EXIT_CODE=$?
-          cat test-results.txt
-          exit $TEST_EXIT_CODE
+          ATTEMPT_TIMEOUT_SECONDS=300
+          MAX_ATTEMPTS=2
+          ATTEMPT=1
+          while [ "$ATTEMPT" -le "$MAX_ATTEMPTS" ]; do
+            echo "=== Integration test attempt ${ATTEMPT}/${MAX_ATTEMPTS} (bounded to ${ATTEMPT_TIMEOUT_SECONDS}s) ==="
+            timeout "$ATTEMPT_TIMEOUT_SECONDS" ${{ inputs.integration_test_command }} > test-results.txt 2>&1
+            TEST_EXIT_CODE=$?
+            cat test-results.txt
+            if [ "$TEST_EXIT_CODE" -eq 0 ]; then
+              break
+            fi
+            echo "::warning::Integration test attempt ${ATTEMPT} failed or timed out (exit code ${TEST_EXIT_CODE})"
+            ATTEMPT=$((ATTEMPT + 1))
+          done
+          exit "$TEST_EXIT_CODE"
         env: ${{ fromJSON(inputs.integration_test_vars) }}
 
       - name: Upload integration test results
@@ -405,12 +467,36 @@ jobs:
           path: ${{ inputs.working_directory }}/sbom.cyclonedx.json
           retention-days: 90
 
+  image-compliance-scan:
+    name: Image Compliance Scan (CIS Docker Benchmark)
+    needs: build-image
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ inputs.working_directory }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+          path: ${{ inputs.working_directory }}
+
+      - run: docker load -i ${{ inputs.service_name }}-image.tar
+
+      - name: Run dockle
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+            goodwithtech/dockle:v0.4.15 \
+            --exit-code 1 --exit-level warn \
+            ${{ inputs.image_repository }}:${{ needs.build-image.outputs.image_tag }}
+
   push-image:
     name: Push Image to ACR (staging)
-    needs: [container-scan, integration-tests]
+    needs: [container-scan, image-compliance-scan, integration-tests]
     if: |
       always() &&
       needs.container-scan.result == 'success' &&
+      needs.image-compliance-scan.result == 'success' &&
       (needs.integration-tests.result == 'success' || needs.integration-tests.result == 'skipped') &&
       github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
@@ -468,10 +554,17 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add ${{ inputs.chart_path }}/values-staging.yaml
-          git commit -m "deploy(staging): ${{ inputs.service_name }} to ${{ needs.push-image.outputs.image_tag }}
+          # Confirmed for real (in service-promotion-template.yml's equivalent step): re-running
+          # against an already-current tag leaves nothing staged - git commit fails outright on
+          # "nothing to commit" rather than treating an already-correct state as a no-op success.
+          if git diff --staged --quiet; then
+            echo "${{ inputs.chart_path }}/values-staging.yaml already references ${{ needs.push-image.outputs.image_tag }} - nothing to commit."
+          else
+            git commit -m "deploy(staging): ${{ inputs.service_name }} to ${{ needs.push-image.outputs.image_tag }}
 
           Source: ${{ github.repository }}@${{ github.sha }}"
-          git push
+            git push
+          fi
 
   smoke-test-staging:
     name: Smoke Test (staging)
@@ -562,13 +655,18 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add ${{ inputs.chart_path }}/values-staging.yaml
-          git commit -m "rollback(staging): automatic rollback to ${{ steps.find_target.outputs.rollback_tag }}
+          # Same guard as the staging deploy commit step above - see that step's comment.
+          if git diff --staged --quiet; then
+            echo "${{ inputs.chart_path }}/values-staging.yaml already references ${{ steps.find_target.outputs.rollback_tag }} - nothing to commit."
+          else
+            git commit -m "rollback(staging): automatic rollback to ${{ steps.find_target.outputs.rollback_tag }}
 
           AUTOMATIC ROLLBACK - triggered by a failed staging smoke test
           Rolled back FROM: ${{ needs.smoke-test-staging.outputs.image_tag }}
           Rolled back TO (last verified-good): ${{ steps.find_target.outputs.rollback_tag }}
           Failed run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          git push
+            git push
+          fi
 
       - name: Report rollback
         run: |

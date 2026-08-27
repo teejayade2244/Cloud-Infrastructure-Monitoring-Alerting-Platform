@@ -126,13 +126,20 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add ${{ inputs.chart_path }}/values-production.yaml
-          git commit -m "deploy(production): promote ${{ inputs.service_name }} to ${{ inputs.image_tag }}
+          # Confirmed for real: re-promoting a tag already at the target value (e.g. a retry, or
+          # re-running for verification) leaves nothing staged - `git commit` fails outright on
+          # "nothing to commit" rather than treating an already-correct state as a no-op success.
+          if git diff --staged --quiet; then
+            echo "${{ inputs.chart_path }}/values-production.yaml already references ${{ inputs.image_tag }} - nothing to commit."
+          else
+            git commit -m "deploy(production): promote ${{ inputs.service_name }} to ${{ inputs.image_tag }}
 
           PRODUCTION PROMOTION
           Image tag: ${{ inputs.image_tag }}
           Triggered by: @${{ github.actor }}
           Verified via: Smoke Test (staging), ${{ inputs.service_name }}-ci.yml"
-          git push
+            git push
+          fi
 
   smoke-test-production:
     name: Smoke Test (production)
@@ -225,13 +232,18 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add ${{ inputs.chart_path }}/values-production.yaml
-          git commit -m "rollback(production): automatic rollback to ${{ steps.find_target.outputs.rollback_tag }}
+          # Same guard as promote-to-production's commit step - see that step's comment.
+          if git diff --staged --quiet; then
+            echo "${{ inputs.chart_path }}/values-production.yaml already references ${{ steps.find_target.outputs.rollback_tag }} - nothing to commit."
+          else
+            git commit -m "rollback(production): automatic rollback to ${{ steps.find_target.outputs.rollback_tag }}
 
           AUTOMATIC ROLLBACK - triggered by a failed production smoke test
           Rolled back FROM: ${{ needs.smoke-test-production.outputs.image_tag }}
           Rolled back TO (last verified-good in production): ${{ steps.find_target.outputs.rollback_tag }}
           Failed run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          git push
+            git push
+          fi
 
       - name: Report rollback
         run: |

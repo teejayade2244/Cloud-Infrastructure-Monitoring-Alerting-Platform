@@ -167,18 +167,25 @@ describe("events-service integration (real Cosmos DB + Service Bus)", () => {
             environment: "production",
         })
 
-        const messages = await receiver.receiveMessages(1, {
+        // Requests more than 1 and finds this test's own message by TEST_RUN_ID, rather than
+        // assuming receiveMessages(1) returns it - confirmed for real elsewhere in this file
+        // that this subscription can receive a concurrently-running, unrelated suite's own
+        // message (see the "does not publish" test's comment), which could otherwise occupy
+        // the single slot instead. Any other message found is completed too, not left
+        // peek-locked.
+        const messages = await receiver.receiveMessages(5, {
             maxWaitTimeInMs: 20000,
         })
+        const msg = messages.find((m) => m.body?.source === TEST_RUN_ID)
+        for (const m of messages) {
+            await receiver.completeMessage(m)
+        }
 
-        expect(messages).toHaveLength(1)
-        const [msg] = messages
+        expect(msg).toBeDefined()
         expect(msg.body.id).toBe(res.body.eventId)
         expect(msg.body.severity).toBe("critical")
         expect(msg.body.source).toBe(TEST_RUN_ID)
         expect(msg.subject).toBe("incident")
-
-        await receiver.completeMessage(msg)
     }, 25000)
 
     test("POST /events with severity=info does not publish to Service Bus", async () => {
@@ -199,14 +206,24 @@ describe("events-service integration (real Cosmos DB + Service Bus)", () => {
             environment: "production",
         })
 
-        // Proves the conditional publish logic against real infrastructure: no message
-        // shows up within a short wait window, not just that mocked sendMessages() wasn't
-        // called.
-        const messages = await receiver.receiveMessages(1, {
+        // Proves the conditional publish logic against real infrastructure: no message THIS
+        // TEST published shows up within a short wait window, not just that mocked
+        // sendMessages() wasn't called. Filtered by TEST_RUN_ID rather than asserting the
+        // subscription is completely empty - confirmed for real that this subscription can
+        // receive an unrelated, concurrently-running suite's own message (create-incident-job's
+        // integration tests publish to the same infrastructure-events-test topic; Service Bus
+        // topic subscriptions fan out independently by default, so a dedicated subscription for
+        // that suite doesn't stop this one from also getting a copy). Any such message is
+        // completed here too, same hygiene as drainSubscription, rather than left peek-locked.
+        const messages = await receiver.receiveMessages(5, {
             maxWaitTimeInMs: 5000,
         })
+        const ours = messages.filter((m) => m.body?.source === TEST_RUN_ID)
+        for (const msg of messages) {
+            await receiver.completeMessage(msg)
+        }
 
-        expect(messages).toHaveLength(0)
+        expect(ours).toHaveLength(0)
     }, 15000)
 
     describe("GET /events filtering", () => {

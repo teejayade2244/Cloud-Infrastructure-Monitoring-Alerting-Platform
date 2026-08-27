@@ -32,6 +32,7 @@ jobs:
       gitops_repository: teejayade2244/inframonitor-gitops
       chart_path: charts/incidents-service
       image_repository: inframonitoraksacr.azurecr.io/incidents-service
+      dockerfile_path: Microservices/services/incidents-service/Dockerfile
       container_registry_name: inframonitoraksacr
       build_container_image: mcr.microsoft.com/dotnet/sdk:10.0
       lint_command: dotnet format --verify-no-changes
