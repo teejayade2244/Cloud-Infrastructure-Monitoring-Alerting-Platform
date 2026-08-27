@@ -413,7 +413,10 @@ jobs:
   container-scan:
     name: Container Vulnerability Scan
     needs: build-image
-    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    if: |
+      always() &&
+      needs.build-image.result == 'success' &&
+      (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
     runs-on: ubuntu-latest
     outputs:
       image_tag: ${{ needs.build-image.outputs.image_tag }}
@@ -465,7 +468,10 @@ jobs:
   image-compliance-scan:
     name: Image Compliance Scan (CIS Docker Benchmark)
     needs: build-image
-    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    if: |
+      always() &&
+      needs.build-image.result == 'success' &&
+      (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
     runs-on: ubuntu-latest
     defaults:
       run:

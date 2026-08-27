@@ -7,12 +7,14 @@ on:
       - 'Microservices/services/incidents-service/**'
       - 'Microservices/services/incidents-service.Tests/**'
       - 'Microservices/services/incidents-service.IntegrationTests/**'
+      - '.github/workflows/service-ci-template.yml'
   pull_request:
     branches: [main]
     paths:
       - 'Microservices/services/incidents-service/**'
       - 'Microservices/services/incidents-service.Tests/**'
       - 'Microservices/services/incidents-service.IntegrationTests/**'
+      - '.github/workflows/service-ci-template.yml'
 
   workflow_dispatch: {}
 

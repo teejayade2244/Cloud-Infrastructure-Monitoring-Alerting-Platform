@@ -3,10 +3,14 @@ name: create-incident-job CI
 on:
   push:
     branches: ['**']
-    paths: ['Microservices/functions/incident-function/**']
+    paths:
+      - 'Microservices/functions/incident-function/**'
+      - '.github/workflows/service-ci-template.yml'
   pull_request:
     branches: [main]
-    paths: ['Microservices/functions/incident-function/**']
+    paths:
+      - 'Microservices/functions/incident-function/**'
+      - '.github/workflows/service-ci-template.yml'
   workflow_dispatch: {}
 
 permissions:
