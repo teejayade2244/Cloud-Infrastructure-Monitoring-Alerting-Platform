@@ -8,11 +8,6 @@ on:
           staging)
         required: true
         type: string
-
-# See events-service-ci.yml for why this exists - a job inside a called workflow_call template
-# can only request permissions up to what this calling workflow grants at its own top level. No
-# security-events here (unlike the CI caller) - nothing in service-promotion-template.yml runs
-# CodeQL.
 permissions:
   contents: read
   id-token: write
