@@ -1,0 +1,66 @@
+name: metrics-collector CI
+
+on:
+  push:
+    branches: ['**']
+    paths:
+      - 'scripts/metrics-collector/**'
+      - '.github/workflows/service-ci-template.yml'
+      - '.github/workflows/service-cd-template.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'scripts/metrics-collector/**'
+      - '.github/workflows/service-ci-template.yml'
+      - '.github/workflows/service-cd-template.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  security-events: write
+  id-token: write
+  actions: read
+
+jobs:
+  call-service-ci:
+    uses: ./.github/workflows/service-ci-template.yml
+    with:
+      service_name: metrics-collector
+      working_directory: scripts/metrics-collector
+      dockerfile_path: scripts/metrics-collector/Dockerfile
+      build_container_image: node:20
+      install_command: npm ci
+      lint_command: npm run lint && npm run format:check
+      test_command: npm run test:coverage
+      coverage_report_path: scripts/metrics-collector/coverage/
+      codeql_language: javascript
+      codeql_paths_ignore: '["scripts/metrics-collector/node_modules", "scripts/metrics-collector/coverage"]'
+      has_integration_tests: false
+    secrets:
+      azure_tenant_id: ${{ secrets.AZURE_TENANT_ID }}
+
+  call-service-cd:
+    needs: call-service-ci
+    if: |
+      always() &&
+      needs.call-service-ci.result == 'success' &&
+      (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+    uses: ./.github/workflows/service-cd-template.yml
+    with:
+      service_name: metrics-collector
+      working_directory: scripts/metrics-collector
+      has_gitops_deploy: true
+      gitops_repository: teejayade2244/inframonitor-gitops
+      chart_path: charts/metrics-collector
+      image_repository: inframonitoraksacr.azurecr.io/metrics-collector
+      container_registry_name: inframonitoraksacr
+      # No smoke-test-staging - it port-forwards to a live Deployment pod and does an HTTP
+      # health check, which structurally doesn't apply to a CronJob (no long-running pod to
+      # reach between executions). Verification for this component happens by checking real
+      # Cosmos writes after a scheduled/manual execution, not an HTTP probe.
+      has_smoke_test: false
+    secrets:
+      azure_client_id_cd: ${{ secrets.AZURE_CLIENT_ID_METRICS_COLLECTOR_CD }}
+      gitops_pat: ${{ secrets.GITOPS_PAT }}
+      azure_tenant_id: ${{ secrets.AZURE_TENANT_ID }}
+      azure_subscription_id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}

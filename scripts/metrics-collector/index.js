@@ -8,7 +8,8 @@ const { DefaultAzureCredential } = require("@azure/identity")
 const REPO = process.env.GITHUB_REPOSITORY
 const GH_TOKEN = process.env.GH_TOKEN
 const COSMOS_ENDPOINT = process.env.COSMOS_ENDPOINT
-const COSMOS_DATABASE = process.env.COSMOS_METRICS_DATABASE || "InfraMonitorMetricsDB"
+const COSMOS_DATABASE =
+    process.env.COSMOS_METRICS_DATABASE || "InfraMonitorMetricsDB"
 const AZURE_CLIENT_ID = process.env.AZURE_CLIENT_ID
 const PUSHGATEWAY_URL = process.env.PUSHGATEWAY_URL?.trim() || ""
 const DORA_WINDOW_DAYS = 30
@@ -17,11 +18,31 @@ const DORA_WINDOW_DAYS = 30
 // deliberately excluded - they're unrelated to the three services' DORA/pipeline metrics.
 const WORKFLOWS = [
     { file: "events-service-ci.yml", service: "events-service", kind: "ci" },
-    { file: "events-service-production-promotion.yml", service: "events-service", kind: "promotion" },
-    { file: "incidents-service-ci.yml", service: "incidents-service", kind: "ci" },
-    { file: "incidents-service-production-promotion.yml", service: "incidents-service", kind: "promotion" },
-    { file: "create-incident-job-ci.yml", service: "create-incident-job", kind: "ci" },
-    { file: "create-incident-job-production-promotion.yml", service: "create-incident-job", kind: "promotion" },
+    {
+        file: "events-service-production-promotion.yml",
+        service: "events-service",
+        kind: "promotion",
+    },
+    {
+        file: "incidents-service-ci.yml",
+        service: "incidents-service",
+        kind: "ci",
+    },
+    {
+        file: "incidents-service-production-promotion.yml",
+        service: "incidents-service",
+        kind: "promotion",
+    },
+    {
+        file: "create-incident-job-ci.yml",
+        service: "create-incident-job",
+        kind: "ci",
+    },
+    {
+        file: "create-incident-job-production-promotion.yml",
+        service: "create-incident-job",
+        kind: "promotion",
+    },
 ]
 
 function credential() {
@@ -40,7 +61,9 @@ async function ghApi(path) {
         },
     })
     if (!res.ok) {
-        throw new Error(`GitHub API ${path} failed: ${res.status} ${await res.text()}`)
+        throw new Error(
+            `GitHub API ${path} failed: ${res.status} ${await res.text()}`,
+        )
     }
     return res.json()
 }
@@ -72,7 +95,9 @@ async function getJobs(runId) {
     const jobs = []
     let page = 1
     for (;;) {
-        const data = await ghApi(`repos/${REPO}/actions/runs/${runId}/jobs?per_page=100&page=${page}`)
+        const data = await ghApi(
+            `repos/${REPO}/actions/runs/${runId}/jobs?per_page=100&page=${page}`,
+        )
         jobs.push(...data.jobs)
         if (data.jobs.length < 100) break
         page += 1
@@ -87,12 +112,17 @@ async function getJobs(runId) {
 // job outputs directly, so the artifact is the only real source for this value.
 async function getPromotedImageTag(runId) {
     const data = await ghApi(`repos/${REPO}/actions/runs/${runId}/artifacts`)
-    const artifact = data.artifacts.find((a) => a.name === "smoke-test-evidence-production")
+    const artifact = data.artifacts.find(
+        (a) => a.name === "smoke-test-evidence-production",
+    )
     if (!artifact) return null
 
-    const res = await fetch(`https://api.github.com/repos/${REPO}/actions/artifacts/${artifact.id}/zip`, {
-        headers: { Authorization: `Bearer ${GH_TOKEN}` },
-    })
+    const res = await fetch(
+        `https://api.github.com/repos/${REPO}/actions/artifacts/${artifact.id}/zip`,
+        {
+            headers: { Authorization: `Bearer ${GH_TOKEN}` },
+        },
+    )
     if (!res.ok) return null
 
     const zip = new AdmZip(Buffer.from(await res.arrayBuffer()))
@@ -108,13 +138,16 @@ async function getPromotedImageTag(runId) {
 }
 
 function durationSeconds(startedAt, completedAt) {
-    return (new Date(completedAt).getTime() - new Date(startedAt).getTime()) / 1000
+    return (
+        (new Date(completedAt).getTime() - new Date(startedAt).getTime()) / 1000
+    )
 }
 
 async function writePipelineMetrics(container, wf, run, jobs) {
     let written = 0
     for (const job of jobs) {
-        if (job.conclusion !== "success" && job.conclusion !== "failure") continue
+        if (job.conclusion !== "success" && job.conclusion !== "failure")
+            continue
         await container.items.upsert({
             id: `${run.id}-${job.id}`,
             service: wf.service,
@@ -138,11 +171,15 @@ async function writeDeploymentEvents(container, wf, run, jobs) {
     const smoke = findJob("Smoke Test (production)")
     const rollback = findJob("Rollback production")
 
-    const promotionSucceeded = Boolean(promote && promote.conclusion === "success")
+    const promotionSucceeded = Boolean(
+        promote && promote.conclusion === "success",
+    )
     // No image was ever promoted if promote-to-production didn't succeed - image_tag is
     // genuinely unavailable then, not just unrecovered (and smoke-test-production, the only
     // source of the evidence artifact, never even runs in that case).
-    const imageTag = promotionSucceeded ? await getPromotedImageTag(run.id) : null
+    const imageTag = promotionSucceeded
+        ? await getPromotedImageTag(run.id)
+        : null
     let written = 0
 
     let eventType
@@ -202,7 +239,9 @@ async function processRun(wf, run, pipelineMetrics, deploymentEvents) {
 
 async function readCheckpoint(stateContainer, workflowFile) {
     try {
-        const { resource } = await stateContainer.item(workflowFile, workflowFile).read()
+        const { resource } = await stateContainer
+            .item(workflowFile, workflowFile)
+            .read()
         return resource || null
     } catch (err) {
         if (err.code === 404) return null
@@ -210,13 +249,20 @@ async function readCheckpoint(stateContainer, workflowFile) {
     }
 }
 
-async function processWorkflow(wf, pipelineMetrics, deploymentEvents, stateContainer) {
+async function processWorkflow(
+    wf,
+    pipelineMetrics,
+    deploymentEvents,
+    stateContainer,
+) {
     const prevState = await readCheckpoint(stateContainer, wf.file)
     const prevLastRunId = prevState?.last_run_id || 0
     const sinceIso = prevState?.last_run_created_at || "2020-01-01T00:00:00Z"
 
     const workflowId = await getWorkflowId(wf.file)
-    const candidateRuns = (await getRunsSince(workflowId, sinceIso)).filter((r) => r.id > prevLastRunId)
+    const candidateRuns = (await getRunsSince(workflowId, sinceIso)).filter(
+        (r) => r.id > prevLastRunId,
+    )
 
     let processed = 0
     let docsWritten = 0
@@ -232,7 +278,12 @@ async function processWorkflow(wf, pipelineMetrics, deploymentEvents, stateConta
             checkpointBlocked = true
             continue
         }
-        docsWritten += await processRun(wf, run, pipelineMetrics, deploymentEvents)
+        docsWritten += await processRun(
+            wf,
+            run,
+            pipelineMetrics,
+            deploymentEvents,
+        )
         processed += 1
         if (!checkpointBlocked) {
             newCheckpointRunId = run.id
@@ -251,18 +302,25 @@ async function processWorkflow(wf, pipelineMetrics, deploymentEvents, stateConta
         })
     }
 
-    return { workflow: wf.file, service: wf.service, found: candidateRuns.length, processed, docsWritten }
+    return {
+        workflow: wf.file,
+        service: wf.service,
+        found: candidateRuns.length,
+        processed,
+        docsWritten,
+    }
 }
 
 // DORA metrics as CURRENT, recomputed-each-run values - a legitimate Pushgateway use (a
 // short-lived batch job pushing the latest snapshot of a number), not history storage. History
 // lives in Cosmos DB; Pushgateway only ever holds "as of the last collector run" values.
 async function computeDora(deploymentEvents, service) {
-    const sinceIso = new Date(Date.now() - DORA_WINDOW_DAYS * 24 * 60 * 60 * 1000).toISOString()
+    const sinceIso = new Date(
+        Date.now() - DORA_WINDOW_DAYS * 24 * 60 * 60 * 1000,
+    ).toISOString()
     const { resources: events } = await deploymentEvents.items
         .query({
-            query:
-                "SELECT * FROM c WHERE c.service = @service AND c.triggered_at >= @since",
+            query: "SELECT * FROM c WHERE c.service = @service AND c.triggered_at >= @since",
             parameters: [
                 { name: "@service", value: service },
                 { name: "@since", value: sinceIso },
@@ -286,10 +344,17 @@ async function computeDora(deploymentEvents, service) {
             const from = failure ? failure.completed_at : r.triggered_at
             return durationSeconds(from, r.completed_at)
         })
-        mttrSeconds = restoreDurations.reduce((a, b) => a + b, 0) / restoreDurations.length
+        mttrSeconds =
+            restoreDurations.reduce((a, b) => a + b, 0) /
+            restoreDurations.length
     }
 
-    return { deploymentFrequencyPerDay, changeFailureRate, mttrSeconds, sampleSize: attempts }
+    return {
+        deploymentFrequencyPerDay,
+        changeFailureRate,
+        mttrSeconds,
+        sampleSize: attempts,
+    }
 }
 
 async function pushDoraMetrics(service, dora) {
@@ -302,20 +367,28 @@ async function pushDoraMetrics(service, dora) {
         `dora_change_failure_rate{service="${service}"} ${dora.changeFailureRate}`,
     ]
     if (dora.mttrSeconds !== null) {
-        lines.push("# TYPE dora_mttr_seconds gauge", `dora_mttr_seconds{service="${service}"} ${dora.mttrSeconds}`)
+        lines.push(
+            "# TYPE dora_mttr_seconds gauge",
+            `dora_mttr_seconds{service="${service}"} ${dora.mttrSeconds}`,
+        )
     }
     lines.push("")
 
     // Grouped by instance=<service> so pushing a new snapshot for one service never wipes
     // another's - Pushgateway replaces everything under the exact job/instance grouping key
     // on each push, not just the metric names present in this payload.
-    const res = await fetch(`${PUSHGATEWAY_URL}/metrics/job/metrics-collector/instance/${service}`, {
-        method: "POST",
-        headers: { "Content-Type": "text/plain" },
-        body: lines.join("\n"),
-    })
+    const res = await fetch(
+        `${PUSHGATEWAY_URL}/metrics/job/metrics-collector/instance/${service}`,
+        {
+            method: "POST",
+            headers: { "Content-Type": "text/plain" },
+            body: lines.join("\n"),
+        },
+    )
     if (!res.ok) {
-        console.error(`Pushgateway push failed for ${service}: ${res.status} ${await res.text()}`)
+        console.error(
+            `Pushgateway push failed for ${service}: ${res.status} ${await res.text()}`,
+        )
         return false
     }
     return true
@@ -326,7 +399,10 @@ async function main() {
     if (!GH_TOKEN) throw new Error("GH_TOKEN must be set")
     if (!COSMOS_ENDPOINT) throw new Error("COSMOS_ENDPOINT must be set")
 
-    const client = new CosmosClient({ endpoint: COSMOS_ENDPOINT, aadCredentials: credential() })
+    const client = new CosmosClient({
+        endpoint: COSMOS_ENDPOINT,
+        aadCredentials: credential(),
+    })
     const db = client.database(COSMOS_DATABASE)
     const pipelineMetrics = db.container("PipelineMetrics")
     const deploymentEvents = db.container("DeploymentEvents")
@@ -334,7 +410,14 @@ async function main() {
 
     const results = []
     for (const wf of WORKFLOWS) {
-        results.push(await processWorkflow(wf, pipelineMetrics, deploymentEvents, stateContainer))
+        results.push(
+            await processWorkflow(
+                wf,
+                pipelineMetrics,
+                deploymentEvents,
+                stateContainer,
+            ),
+        )
     }
 
     const totalFound = results.reduce((s, r) => s + r.found, 0)
@@ -343,28 +426,40 @@ async function main() {
 
     console.log("=== Collector run summary ===")
     for (const r of results) {
-        console.log(`  ${r.workflow}: ${r.found} new run(s) found, ${r.processed} completed and processed, ${r.docsWritten} document(s) written`)
+        console.log(
+            `  ${r.workflow}: ${r.found} new run(s) found, ${r.processed} completed and processed, ${r.docsWritten} document(s) written`,
+        )
     }
 
     if (totalFound === 0) {
         console.log("Nothing new since last run - exiting cleanly.")
     } else {
-        console.log(`Total: ${totalProcessed}/${totalFound} new runs processed, ${totalDocsWritten} documents written.`)
+        console.log(
+            `Total: ${totalProcessed}/${totalFound} new runs processed, ${totalDocsWritten} documents written.`,
+        )
     }
 
     if (!PUSHGATEWAY_URL) {
-        console.log("PUSHGATEWAY_URL not set - skipping DORA metric push (no Pushgateway deployed yet).")
+        console.log(
+            "PUSHGATEWAY_URL not set - skipping DORA metric push (no Pushgateway deployed yet).",
+        )
     } else {
         const services = [...new Set(WORKFLOWS.map((w) => w.service))]
         for (const service of services) {
             const dora = await computeDora(deploymentEvents, service)
             const pushed = await pushDoraMetrics(service, dora)
-            console.log(`  DORA snapshot for ${service}: ${JSON.stringify(dora)} (pushed: ${pushed})`)
+            console.log(
+                `  DORA snapshot for ${service}: ${JSON.stringify(dora)} (pushed: ${pushed})`,
+            )
         }
     }
 }
 
-main().catch((err) => {
-    console.error(err)
-    process.exit(1)
-})
+if (require.main === module) {
+    main().catch((err) => {
+        console.error(err)
+        process.exit(1)
+    })
+}
+
+module.exports = { durationSeconds }
