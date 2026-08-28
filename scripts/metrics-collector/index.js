@@ -13,6 +13,12 @@ const COSMOS_DATABASE =
 const AZURE_CLIENT_ID = process.env.AZURE_CLIENT_ID
 const PUSHGATEWAY_URL = process.env.PUSHGATEWAY_URL?.trim() || ""
 const DORA_WINDOW_DAYS = 30
+// Confirmed against real data: 7 days captures ~90% of all PipelineMetrics history and gives
+// 17-45 samples for the common current job names - enough for a meaningful p95. 1 day was too
+// thin (many jobs would have single-digit sample counts); the job renames from the CI/CD
+// template split (call-service-ci / X, call-service-cd / X) mean older-named docs age out of
+// the window naturally rather than needing to be filtered out explicitly.
+const PIPELINE_WINDOW_DAYS = 7
 
 // Every workflow this collector reads history from. deploy-frontend.yml and terraform.yml are
 // deliberately excluded - they're unrelated to the three services' DORA/pipeline metrics.
@@ -375,8 +381,11 @@ async function pushDoraMetrics(service, dora) {
     lines.push("")
 
     // Grouped by instance=<service> so pushing a new snapshot for one service never wipes
-    // another's - Pushgateway replaces everything under the exact job/instance grouping key
-    // on each push, not just the metric names present in this payload.
+    // another's. POST (not PUT) specifically: Pushgateway's POST only replaces metric families
+    // with the SAME name already under this job/instance grouping key - other metric families
+    // (e.g. the pipeline_job_* ones pushPipelineMetrics sends to this exact same grouping key)
+    // are left untouched. PUT would wholesale-replace everything under the grouping key instead,
+    // which would make the two pushes fight each other.
     const res = await fetch(
         `${PUSHGATEWAY_URL}/metrics/job/metrics-collector/instance/${service}`,
         {
@@ -388,6 +397,111 @@ async function pushDoraMetrics(service, dora) {
     if (!res.ok) {
         console.error(
             `Pushgateway push failed for ${service}: ${res.status} ${await res.text()}`,
+        )
+        return false
+    }
+    return true
+}
+
+function escapeLabelValue(value) {
+    return value
+        .replace(/\\/g, "\\\\")
+        .replace(/"/g, '\\"')
+        .replace(/\n/g, "\\n")
+}
+
+function percentile(sortedValues, p) {
+    const idx = Math.ceil((p / 100) * sortedValues.length) - 1
+    return sortedValues[Math.max(0, Math.min(idx, sortedValues.length - 1))]
+}
+
+// Same reasoning as computeDora's own comment: a recomputed-each-run snapshot of "current job
+// health" is exactly the short-lived-batch-job pattern Pushgateway is for. History lives in
+// PipelineMetrics itself; this just summarizes the trailing window on every collector run.
+async function computePipelineMetrics(pipelineMetrics, service) {
+    const sinceIso = new Date(
+        Date.now() - PIPELINE_WINDOW_DAYS * 24 * 60 * 60 * 1000,
+    ).toISOString()
+    const { resources: docs } = await pipelineMetrics.items
+        .query({
+            query: "SELECT * FROM c WHERE c.service = @service AND c.started_at >= @since",
+            parameters: [
+                { name: "@service", value: service },
+                { name: "@since", value: sinceIso },
+            ],
+        })
+        .fetchAll()
+
+    const byJob = new Map()
+    for (const doc of docs) {
+        if (!byJob.has(doc.job_name)) byJob.set(doc.job_name, [])
+        byJob.get(doc.job_name).push(doc)
+    }
+
+    const results = []
+    for (const [jobName, jobDocs] of byJob) {
+        const durations = jobDocs
+            .map((d) => d.duration_seconds)
+            .sort((a, b) => a - b)
+        const successCount = jobDocs.filter(
+            (d) => d.status === "success",
+        ).length
+        results.push({
+            jobName,
+            avgDurationSeconds:
+                durations.reduce((a, b) => a + b, 0) / durations.length,
+            p95DurationSeconds: percentile(durations, 95),
+            successRate: successCount / jobDocs.length,
+            sampleSize: jobDocs.length,
+        })
+    }
+    return results
+}
+
+async function pushPipelineMetrics(service, jobMetrics) {
+    if (!PUSHGATEWAY_URL) return false
+    if (jobMetrics.length === 0) return true
+
+    const metricLine = (name, m, value) =>
+        `${name}{service="${service}",job_name="${escapeLabelValue(m.jobName)}"} ${value}`
+
+    const lines = [
+        "# TYPE pipeline_job_duration_avg_seconds gauge",
+        ...jobMetrics.map((m) =>
+            metricLine(
+                "pipeline_job_duration_avg_seconds",
+                m,
+                m.avgDurationSeconds,
+            ),
+        ),
+        "# TYPE pipeline_job_duration_p95_seconds gauge",
+        ...jobMetrics.map((m) =>
+            metricLine(
+                "pipeline_job_duration_p95_seconds",
+                m,
+                m.p95DurationSeconds,
+            ),
+        ),
+        "# TYPE pipeline_job_success_rate gauge",
+        ...jobMetrics.map((m) =>
+            metricLine("pipeline_job_success_rate", m, m.successRate),
+        ),
+        "",
+    ]
+
+    // Same grouping key as pushDoraMetrics (job=metrics-collector, instance=<service>) and same
+    // POST method - the two pushes merge (different metric names), neither wipes the other.
+    const res = await fetch(
+        `${PUSHGATEWAY_URL}/metrics/job/metrics-collector/instance/${service}`,
+        {
+            method: "POST",
+            headers: { "Content-Type": "text/plain" },
+            body: lines.join("\n"),
+        },
+    )
+    if (!res.ok) {
+        console.error(
+            `Pushgateway push failed for ${service} (pipeline metrics): ${res.status} ${await res.text()}`,
         )
         return false
     }
@@ -441,15 +555,27 @@ async function main() {
 
     if (!PUSHGATEWAY_URL) {
         console.log(
-            "PUSHGATEWAY_URL not set - skipping DORA metric push (no Pushgateway deployed yet).",
+            "PUSHGATEWAY_URL not set - skipping DORA/pipeline metric push (no Pushgateway deployed yet).",
         )
     } else {
         const services = [...new Set(WORKFLOWS.map((w) => w.service))]
         for (const service of services) {
             const dora = await computeDora(deploymentEvents, service)
-            const pushed = await pushDoraMetrics(service, dora)
+            const doraPushed = await pushDoraMetrics(service, dora)
             console.log(
-                `  DORA snapshot for ${service}: ${JSON.stringify(dora)} (pushed: ${pushed})`,
+                `  DORA snapshot for ${service}: ${JSON.stringify(dora)} (pushed: ${doraPushed})`,
+            )
+
+            const jobMetrics = await computePipelineMetrics(
+                pipelineMetrics,
+                service,
+            )
+            const pipelinePushed = await pushPipelineMetrics(
+                service,
+                jobMetrics,
+            )
+            console.log(
+                `  Pipeline metrics for ${service}: ${jobMetrics.length} job(s) (pushed: ${pipelinePushed})`,
             )
         }
     }
@@ -462,4 +588,4 @@ if (require.main === module) {
     })
 }
 
-module.exports = { durationSeconds }
+module.exports = { durationSeconds, percentile, escapeLabelValue }
