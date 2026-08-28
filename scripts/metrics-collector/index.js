@@ -338,9 +338,15 @@ async function computeDora(deploymentEvents, service) {
     const failures = events.filter((e) => e.eventType === "deploy_failure")
     const rollbacks = events.filter((e) => e.eventType === "rollback")
 
+    // Unlike changeFailureRate, this is never ambiguous at zero: it's a count divided by the
+    // fixed window length, not by attempts, so "0 deploys/day" always means exactly that -
+    // zero deploys happened - not "no data". No null-handling needed here.
     const deploymentFrequencyPerDay = successes.length / DORA_WINDOW_DAYS
     const attempts = successes.length + failures.length
-    const changeFailureRate = attempts > 0 ? failures.length / attempts : 0
+    // null (not 0) when attempts is 0 - a real 0% failure rate (many successes, zero failures)
+    // and "no deploy attempts at all in the window" are genuinely different outcomes, and 0
+    // can't distinguish them. Same convention mttrSeconds already uses below.
+    const changeFailureRate = safeRate(failures.length, attempts)
 
     let mttrSeconds = null
     if (rollbacks.length > 0) {
@@ -369,9 +375,13 @@ async function pushDoraMetrics(service, dora) {
     const lines = [
         "# TYPE dora_deployment_frequency_per_day gauge",
         `dora_deployment_frequency_per_day{service="${service}"} ${dora.deploymentFrequencyPerDay}`,
-        "# TYPE dora_change_failure_rate gauge",
-        `dora_change_failure_rate{service="${service}"} ${dora.changeFailureRate}`,
     ]
+    if (dora.changeFailureRate !== null) {
+        lines.push(
+            "# TYPE dora_change_failure_rate gauge",
+            `dora_change_failure_rate{service="${service}"} ${dora.changeFailureRate}`,
+        )
+    }
     if (dora.mttrSeconds !== null) {
         lines.push(
             "# TYPE dora_mttr_seconds gauge",
@@ -401,6 +411,33 @@ async function pushDoraMetrics(service, dora) {
         return false
     }
     return true
+}
+
+// null (not 0) when there's nothing to compute a rate FROM - a real 0 and "no data" are
+// different outcomes a bare division can't distinguish.
+function safeRate(numerator, denominator) {
+    return denominator > 0 ? numerator / denominator : null
+}
+
+// Pushgateway's POST can only ADD or REPLACE-BY-NAME metric families under a grouping key - it
+// can never remove one that stops being pushed. Confirmed for real against the live instance:
+// a metric pushed once and then omitted from a later POST simply lingers forever. So a field
+// that goes from a real value to null (e.g. changeFailureRate with zero attempts) would leave
+// its last real value stuck in Prometheus, silently wrong. Clearing the whole group first -
+// confirmed safe to call even when the group doesn't exist yet (real 202, not a 404) - then
+// re-pushing only what's currently true is the only way to make an absent metric actually
+// disappear, not just stop growing.
+async function clearPushgatewayGroup(service) {
+    if (!PUSHGATEWAY_URL) return
+    const res = await fetch(
+        `${PUSHGATEWAY_URL}/metrics/job/metrics-collector/instance/${service}`,
+        { method: "DELETE" },
+    )
+    if (!res.ok) {
+        console.error(
+            `Pushgateway group clear failed for ${service}: ${res.status} ${await res.text()}`,
+        )
+    }
 }
 
 function escapeLabelValue(value) {
@@ -560,6 +597,8 @@ async function main() {
     } else {
         const services = [...new Set(WORKFLOWS.map((w) => w.service))]
         for (const service of services) {
+            await clearPushgatewayGroup(service)
+
             const dora = await computeDora(deploymentEvents, service)
             const doraPushed = await pushDoraMetrics(service, dora)
             console.log(
@@ -588,4 +627,4 @@ if (require.main === module) {
     })
 }
 
-module.exports = { durationSeconds, percentile, escapeLabelValue }
+module.exports = { durationSeconds, percentile, escapeLabelValue, safeRate }
