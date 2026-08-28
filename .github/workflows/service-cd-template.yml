@@ -123,11 +123,6 @@ permissions:
 jobs:
   build-image:
     name: Docker Build
-    # No needs: here - unlike the single-template version, this template has no visibility into
-    # lint-and-format/unit-tests/dependency-scan/dockerfile-lint/integration-tests at all anymore;
-    # they live in service-ci-template.yml now. The caller's own call-service-cd job (needs:
-    # call-service-ci, if: needs.call-service-ci.result == 'success') is what used to be this
-    # job's explicit per-job result checks - a single gate one level up, not lost, just moved.
     if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     outputs:
@@ -238,9 +233,6 @@ jobs:
   push-image:
     name: Push Image to ACR (staging)
     needs: [container-scan, image-compliance-scan]
-    # integration-tests no longer exists in this template's graph - the caller's
-    # call-service-cd gate (needs.call-service-ci.result == 'success') already guarantees it
-    # passed or was legitimately skipped before this template is invoked at all.
     if: |
       always() &&
       inputs.has_image_push &&
