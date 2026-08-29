@@ -21,4 +21,5 @@ app.use((err, req, res, next) => {
     res.status(500).json({ error: "Internal server error" })
 })
 
+// no-op: fresh build tag to demonstrate a real production rollback end to end
 module.exports = app
