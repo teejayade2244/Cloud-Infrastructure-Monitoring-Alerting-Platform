@@ -317,6 +317,58 @@ async function processWorkflow(
     }
 }
 
+async function getCommitAuthoredAt(sha) {
+    try {
+        const data = await ghApi(`repos/${REPO}/commits/${sha}`)
+        // Confirmed for real against this repo's actual history: author.date and
+        // committer.date are identical for every merge commit checked (GitHub resets both to
+        // the merge timestamp, not any earlier feature-branch commit time) - only a genuine
+        // direct/non-merge commit preserves a genuinely distinct author.date. author.date is still the
+        // textbook-correct DORA field regardless: it's the timestamp of the commit that
+        // actually reached main, which for a merge-commit-based workflow like this project's
+        // IS "when the change integrated" - not an individual developer's original per-commit
+        // timestamp on a since-merged-and-deleted branch.
+        return data.commit.author.date
+    } catch (err) {
+        // Confirmed for real: an invalid/unreachable SHA returns HTTP 422 ("No commit found
+        // for SHA"), not 404 - can genuinely happen for force-pushed/rewritten history. One
+        // bad historical record shouldn't crash the whole collector run.
+        console.error(`  Could not fetch commit ${sha}: ${err.message}`)
+        return null
+    }
+}
+
+// One-time-per-document (idempotent) enrichment: DeploymentEvents is written with only
+// commit_sha (an identifier), never the commit's own timestamp - Lead Time for Changes needs
+// the latter. Re-running this is always safe and cheap: the query itself excludes documents
+// that already have commit_authored_at, so an already-enriched document is never re-fetched.
+async function backfillCommitTimestamps(deploymentEvents) {
+    const { resources: docs } = await deploymentEvents.items
+        .query(
+            "SELECT * FROM c WHERE c.environment = 'production' AND IS_DEFINED(c.commit_sha) AND NOT IS_DEFINED(c.commit_authored_at)",
+        )
+        .fetchAll()
+
+    let enriched = 0
+    let notFound = 0
+    for (const doc of docs) {
+        const authoredAt = await getCommitAuthoredAt(doc.commit_sha)
+        if (!authoredAt) {
+            notFound += 1
+            continue
+        }
+        // Patch, not upsert - this only ever adds the one new field, never touches or risks
+        // clobbering anything else already on the document.
+        await deploymentEvents
+            .item(doc.id, doc.service)
+            .patch([
+                { op: "add", path: "/commit_authored_at", value: authoredAt },
+            ])
+        enriched += 1
+    }
+    return { enriched, notFound, total: docs.length }
+}
+
 // DORA metrics as CURRENT, recomputed-each-run values - a legitimate Pushgateway use (a
 // short-lived batch job pushing the latest snapshot of a number), not history storage. History
 // lives in Cosmos DB; Pushgateway only ever holds "as of the last collector run" values.
@@ -361,10 +413,33 @@ async function computeDora(deploymentEvents, service) {
             restoreDurations.length
     }
 
+    // Lead Time for Changes: every DeploymentEvents document is already production-only (this
+    // container is only ever written from the *-production-promotion.yml workflows - staging
+    // deploys land in PipelineMetrics instead, never here), but filtering by environment
+    // explicitly rather than relying on that being true forever. completed_at (not
+    // triggered_at) is "reached production" - triggered_at is when the promotion workflow
+    // started, before the smoke test even ran; completed_at is when it was actually verified
+    // live. commit_authored_at is populated by backfillCommitTimestamps() - a success without
+    // it yet (not backfilled, or the commit lookup failed) is excluded rather than treated as 0.
+    let leadTimeSeconds = null
+    const productionSuccessesWithCommitData = successes.filter(
+        (e) => e.environment === "production" && e.commit_authored_at,
+    )
+    if (productionSuccessesWithCommitData.length > 0) {
+        const leadTimes = productionSuccessesWithCommitData
+            .map((e) => durationSeconds(e.commit_authored_at, e.completed_at))
+            .sort((a, b) => a - b)
+        // Median, not mean: lead time is a classically skewed distribution (most changes ship
+        // fast, occasional ones sit for days), and a single slow outlier would drag a mean up
+        // in a way that misrepresents the typical case. Reusing percentile() at p50.
+        leadTimeSeconds = percentile(leadTimes, 50)
+    }
+
     return {
         deploymentFrequencyPerDay,
         changeFailureRate,
         mttrSeconds,
+        leadTimeSeconds,
         sampleSize: attempts,
     }
 }
@@ -386,6 +461,12 @@ async function pushDoraMetrics(service, dora) {
         lines.push(
             "# TYPE dora_mttr_seconds gauge",
             `dora_mttr_seconds{service="${service}"} ${dora.mttrSeconds}`,
+        )
+    }
+    if (dora.leadTimeSeconds !== null) {
+        lines.push(
+            "# TYPE dora_lead_time_seconds gauge",
+            `dora_lead_time_seconds{service="${service}"} ${dora.leadTimeSeconds}`,
         )
     }
     lines.push("")
@@ -558,6 +639,14 @@ async function main() {
     const pipelineMetrics = db.container("PipelineMetrics")
     const deploymentEvents = db.container("DeploymentEvents")
     const stateContainer = db.container("CollectorState")
+
+    const backfill = await backfillCommitTimestamps(deploymentEvents)
+    console.log(
+        `Commit timestamp backfill: ${backfill.enriched}/${backfill.total} production deploy record(s) enriched` +
+            (backfill.notFound > 0
+                ? ` (${backfill.notFound} commit(s) could not be found)`
+                : ""),
+    )
 
     const results = []
     for (const wf of WORKFLOWS) {
