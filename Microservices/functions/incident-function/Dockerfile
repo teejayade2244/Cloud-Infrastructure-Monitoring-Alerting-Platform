@@ -14,5 +14,4 @@ ENV NODE_ENV=production
 
 USER 1000
 
-# TEMPORARY: deliberate end-to-end rollback test - reverted in a follow-up commit.
-CMD ["node", "src/create-incidentz.js"]
+CMD ["node", "src/create-incident.js"]
