@@ -10,6 +10,14 @@ if [ "$SERVICE_NAME" != "create-incident-job" ]; then
   exit 1
 fi
 
+# TEMPORARY: deliberate end-to-end PRODUCTION rollback test - reverted in a follow-up commit.
+# This script has only one SERVICE_NAME (checked above), so no per-service scoping is needed -
+# unlike smoke-test.sh's own equivalent trip-wire, which had to avoid affecting incidents-service.
+if [ "$ENVIRONMENT_LABEL" = "production" ]; then
+  echo "::error::TEMPORARY: deliberate end-to-end production rollback test - forced smoke-test-production failure."
+  exit 1
+fi
+
 COSMOS_ENDPOINT="https://inframonitor-aks-cosmos-eastus2.documents.azure.com:443/"
 SERVICEBUS_NAMESPACE="inframonitor-aks-svcbus.servicebus.windows.net"
 if [ "$ENVIRONMENT_LABEL" = "production" ]; then
