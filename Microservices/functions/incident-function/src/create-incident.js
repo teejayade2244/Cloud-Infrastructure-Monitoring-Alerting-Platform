@@ -57,4 +57,5 @@ if (require.main === module) {
         })
 }
 
+// no-op: fresh build tag to demonstrate a real production rollback end to end
 module.exports = { handleEvent }
