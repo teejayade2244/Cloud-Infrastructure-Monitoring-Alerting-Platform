@@ -7,9 +7,8 @@ app.use(express.json())
 // Used by the CI smoke-test job to verify the staging/production deployment is up - a failure
 // here (or on the write/cleanup checks in routes/events.js) triggers an automatic GitOps rollback.
 app.get("/health", (req, res) => {
-    // TEMPORARY: deliberate end-to-end rollback test - reverted in a follow-up commit.
-    res.status(500).json({
-        status: "unhealthy",
+    res.json({
+        status: "healthy",
         service: "events-service",
         timestamp: new Date().toISOString(),
     })
