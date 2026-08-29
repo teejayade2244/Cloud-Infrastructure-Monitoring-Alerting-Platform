@@ -42,12 +42,13 @@ var app = builder.Build();
 
 app.UseMiddleware<ErrorHandlingMiddleware>();
 app.MapControllers();
-app.MapGet("/health", () => new
+// TEMPORARY: deliberate end-to-end rollback test - reverted in a follow-up commit.
+app.MapGet("/health", () => Results.Json(new
 {
-    status = "healthy",
+    status = "unhealthy",
     service = "incidents-service",
     timestamp = DateTime.UtcNow
-});
+}, statusCode: 500));
 
 app.Run();
 
