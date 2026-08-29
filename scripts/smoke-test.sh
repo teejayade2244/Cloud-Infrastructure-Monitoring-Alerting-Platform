@@ -5,14 +5,6 @@ ARGOCD_APP_NAME="${ARGOCD_APP_NAME:-events-service-staging}"
 ENVIRONMENT_LABEL="${ENVIRONMENT_LABEL:-staging}"
 SERVICE_NAME="${SERVICE_NAME:-events-service}"
 
-# TEMPORARY: deliberate end-to-end PRODUCTION rollback test - reverted in a follow-up commit.
-# Scoped to events-service+production only so incidents-service's own production promotion
-# (sharing this same script) is entirely unaffected.
-if [ "$SERVICE_NAME" = "events-service" ] && [ "$ENVIRONMENT_LABEL" = "production" ]; then
-  echo "::error::TEMPORARY: deliberate end-to-end production rollback test - forced smoke-test-production failure."
-  exit 1
-fi
-
 if [ "$SERVICE_NAME" != "events-service" ] && [ "$SERVICE_NAME" != "incidents-service" ]; then
   echo "::error::SERVICE_NAME must be 'events-service' or 'incidents-service', got '${SERVICE_NAME}' - no write/verify check defined for it"
   exit 1
