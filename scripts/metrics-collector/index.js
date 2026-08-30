@@ -13,11 +13,6 @@ const COSMOS_DATABASE =
 const AZURE_CLIENT_ID = process.env.AZURE_CLIENT_ID
 const PUSHGATEWAY_URL = process.env.PUSHGATEWAY_URL?.trim() || ""
 const DORA_WINDOW_DAYS = 30
-// Confirmed against real data: 7 days captures ~90% of all PipelineMetrics history and gives
-// 17-45 samples for the common current job names - enough for a meaningful p95. 1 day was too
-// thin (many jobs would have single-digit sample counts); the job renames from the CI/CD
-// template split (call-service-ci / X, call-service-cd / X) mean older-named docs age out of
-// the window naturally rather than needing to be filtered out explicitly.
 const PIPELINE_WINDOW_DAYS = 7
 
 // Every workflow this collector reads history from. deploy-frontend.yml and terraform.yml are
@@ -171,6 +166,30 @@ async function writePipelineMetrics(container, wf, run, jobs) {
     return written
 }
 
+// One document per run summarizing the whole workflow's wall-clock time (created_at to
+// updated_at) - genuinely different from summing this run's own job durations, since jobs that
+// ran in parallel would otherwise be double-counted. job_name is a sentinel, not a real job
+// name, and is explicitly excluded from computePipelineMetrics()'s per-job loop (see there).
+// Same success/failure-only gate as writePipelineMetrics's own jobs, for the same reason: a
+// cancelled/timed-out run's created_at-to-updated_at span doesn't represent a real completed
+// pipeline duration.
+async function writeWorkflowTotalMetric(container, wf, run) {
+    if (run.conclusion !== "success" && run.conclusion !== "failure") return 0
+    await container.items.upsert({
+        id: `${run.id}-total`,
+        service: wf.service,
+        workflow_name: run.name,
+        job_name: "__workflow_total__",
+        run_id: run.id,
+        status: run.conclusion,
+        started_at: run.created_at,
+        completed_at: run.updated_at,
+        duration_seconds: durationSeconds(run.created_at, run.updated_at),
+        timestamp: new Date().toISOString(),
+    })
+    return 1
+}
+
 async function writeDeploymentEvents(container, wf, run, jobs) {
     const findJob = (needle) => jobs.find((j) => j.name.includes(needle))
     const promote = findJob("Promote to production")
@@ -237,6 +256,13 @@ async function writeDeploymentEvents(container, wf, run, jobs) {
 async function processRun(wf, run, pipelineMetrics, deploymentEvents) {
     const jobs = await getJobs(run.id)
     let written = await writePipelineMetrics(pipelineMetrics, wf, run, jobs)
+    // Workflow-level wall-clock time is only a meaningful "pipeline total" concept for the
+    // staging CI/CD pipeline (build -> scan -> deploy -> smoke test) - a promotion run's own
+    // total duration is a structurally different, much shorter kind of pipeline, and averaging
+    // the two together under one gauge would misrepresent both.
+    if (wf.kind === "ci") {
+        written += await writeWorkflowTotalMetric(pipelineMetrics, wf, run)
+    }
     if (wf.kind === "promotion") {
         written += await writeDeploymentEvents(deploymentEvents, wf, run, jobs)
     }
@@ -552,6 +578,10 @@ async function computePipelineMetrics(pipelineMetrics, service) {
 
     const byJob = new Map()
     for (const doc of docs) {
+        // __workflow_total__ is a whole-run sentinel written by writeWorkflowTotalMetric(), not
+        // a real job - excluded here so it never shows up as a fake "job" in the per-job
+        // tables/trend panels. Its own aggregation lives in computeTotalPipelineMetrics().
+        if (doc.job_name === "__workflow_total__") continue
         if (!byJob.has(doc.job_name)) byJob.set(doc.job_name, [])
         byJob.get(doc.job_name).push(doc)
     }
@@ -574,6 +604,35 @@ async function computePipelineMetrics(pipelineMetrics, service) {
         })
     }
     return results
+}
+
+// Workflow-level wall-clock time (trigger to final completion), aggregated the same way as
+// computePipelineMetrics()'s per-job durations (avg/p95 over the same rolling window) but
+// queried separately rather than folded into that function's loop - keeps "no total-duration
+// docs yet for this service" (null) cleanly distinguishable from "zero jobs ran either".
+async function computeTotalPipelineMetrics(pipelineMetrics, service) {
+    const sinceIso = new Date(
+        Date.now() - PIPELINE_WINDOW_DAYS * 24 * 60 * 60 * 1000,
+    ).toISOString()
+    const { resources: docs } = await pipelineMetrics.items
+        .query({
+            query: "SELECT * FROM c WHERE c.service = @service AND c.job_name = '__workflow_total__' AND c.started_at >= @since",
+            parameters: [
+                { name: "@service", value: service },
+                { name: "@since", value: sinceIso },
+            ],
+        })
+        .fetchAll()
+
+    if (docs.length === 0) return null
+
+    const durations = docs.map((d) => d.duration_seconds).sort((a, b) => a - b)
+    return {
+        avgDurationSeconds:
+            durations.reduce((a, b) => a + b, 0) / durations.length,
+        p95DurationSeconds: percentile(durations, 95),
+        sampleSize: docs.length,
+    }
 }
 
 async function pushPipelineMetrics(service, jobMetrics) {
@@ -620,6 +679,39 @@ async function pushPipelineMetrics(service, jobMetrics) {
     if (!res.ok) {
         console.error(
             `Pushgateway push failed for ${service} (pipeline metrics): ${res.status} ${await res.text()}`,
+        )
+        return false
+    }
+    return true
+}
+
+// null (not a push of nothing) when there are no __workflow_total__ docs yet in the window -
+// same reasoning as pushDoraMetrics's null-skip fields, so a service with no data doesn't get a
+// stale or fabricated value sitting in Prometheus.
+async function pushTotalPipelineMetric(service, totalMetrics) {
+    if (!PUSHGATEWAY_URL) return false
+    if (!totalMetrics) return true
+
+    const lines = [
+        "# TYPE pipeline_total_duration_avg_seconds gauge",
+        `pipeline_total_duration_avg_seconds{service="${service}"} ${totalMetrics.avgDurationSeconds}`,
+        "# TYPE pipeline_total_duration_p95_seconds gauge",
+        `pipeline_total_duration_p95_seconds{service="${service}"} ${totalMetrics.p95DurationSeconds}`,
+        "",
+    ]
+
+    // Same grouping key as pushPipelineMetrics/pushDoraMetrics - merges rather than conflicts.
+    const res = await fetch(
+        `${PUSHGATEWAY_URL}/metrics/job/metrics-collector/instance/${service}`,
+        {
+            method: "POST",
+            headers: { "Content-Type": "text/plain" },
+            body: lines.join("\n"),
+        },
+    )
+    if (!res.ok) {
+        console.error(
+            `Pushgateway push failed for ${service} (total pipeline duration): ${res.status} ${await res.text()}`,
         )
         return false
     }
@@ -704,6 +796,18 @@ async function main() {
             )
             console.log(
                 `  Pipeline metrics for ${service}: ${jobMetrics.length} job(s) (pushed: ${pipelinePushed})`,
+            )
+
+            const totalMetrics = await computeTotalPipelineMetrics(
+                pipelineMetrics,
+                service,
+            )
+            const totalPushed = await pushTotalPipelineMetric(
+                service,
+                totalMetrics,
+            )
+            console.log(
+                `  Total pipeline duration for ${service}: ${JSON.stringify(totalMetrics)} (pushed: ${totalPushed})`,
             )
         }
     }
