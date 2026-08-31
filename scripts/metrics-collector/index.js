@@ -258,11 +258,17 @@ async function processRun(wf, run, pipelineMetrics, deploymentEvents) {
     let written = await writePipelineMetrics(pipelineMetrics, wf, run, jobs)
     // Workflow-level wall-clock time is only a meaningful "pipeline total" concept for a run
     // that actually reached staging: a promotion run's own total is a structurally different,
-    // much shorter pipeline (excluded via wf.kind), and a pull_request run never reaches
-    // push-image/smoke-test-staging at all (those are gated push-to-main-only elsewhere in this
-    // same template) - counting one alongside genuine push-to-main totals would average two
-    // different pipeline shapes together under one gauge, not just add noise that ages out.
-    if (wf.kind === "ci" && run.event === "push") {
+    // much shorter pipeline (excluded via wf.kind); a pull_request run never reaches
+    // push-image/smoke-test-staging (gated push-to-main-only); and a push to any OTHER branch
+    // (e.g. a feature branch, which also fires "push" - branches: ['**'] matches any branch, not
+    // just main) never reaches call-service-cd at all, since that job's own condition requires
+    // ref == main specifically. All three would silently mix a shorter, incomplete pipeline shape
+    // into the same gauge as genuine push-to-main totals.
+    if (
+        wf.kind === "ci" &&
+        run.event === "push" &&
+        run.head_branch === "main"
+    ) {
         written += await writeWorkflowTotalMetric(pipelineMetrics, wf, run)
     }
     if (wf.kind === "promotion") {
