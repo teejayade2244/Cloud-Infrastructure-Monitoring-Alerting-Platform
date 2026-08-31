@@ -216,7 +216,7 @@ jobs:
       needs.dependency-scan.result == 'success' &&
       needs.dockerfile-lint.result == 'success' &&
       (needs.sast.result == 'success' || needs.sast.result == 'skipped') &&
-      (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+      github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     container: ${{ inputs.build_container_image }}
     timeout-minutes: 15
