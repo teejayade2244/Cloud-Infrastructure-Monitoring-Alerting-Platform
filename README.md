@@ -11,8 +11,8 @@
 **InfraMonitor** is a cloud infrastructure monitoring and alerting platform: a single place to
 publish infrastructure events, automatically turn the critical ones into tracked incidents, and get
 notified the moment something needs attention. This README covers the platform end to end; the
-CI/CD system that builds, tests, scans, and deploys it is documented in full, with real numbers and
-real engineering reasoning, in **[docs/CICD.md](docs/CICD.md)**.
+CI/CD and observability system that builds, tests, scans, deploys, and measures it is documented in
+full, with real numbers and real engineering reasoning, in **[docs/CICD.md](docs/CICD.md)**.
 
 ## The problem it solves
 
@@ -37,20 +37,22 @@ kept in sync entirely through GitOps — no `kubectl apply` in the deploy path, 
   `ScaledJob`, not a long-running Deployment, so it costs nothing to run when there's nothing to
   process.
 - **kube-prometheus-stack** (Prometheus + Grafana + Alertmanager) provides cluster and workload
-  metrics, running in the `monitoring` namespace.
+  metrics, running in the `monitoring` namespace — and also backs a purpose-built, in-cluster
+  `metrics-collector` CronJob that turns raw GitHub Actions history into real DORA and pipeline-
+  performance dashboards. See [docs/CICD.md §8–§10](docs/CICD.md#8-observability-system).
 - Two environments, `inframonitor` (staging) and `inframonitor-production`, each with its own
   namespace and its own ArgoCD Applications per service.
 
-Two backend services and one background job make up the application layer:
+Three backend components make up the application layer:
 
 | Service | Stack | Role |
 |---|---|---|
 | `events-service` | Node.js + Express | Ingests infrastructure events, writes to Cosmos DB, publishes critical/high-severity events to Service Bus |
 | `incidents-service` | .NET 10 (ASP.NET Core Web API) | Incident CRUD |
-| `create-incident-job` | Node.js, KEDA-scaled Container Apps-style job on AKS | Triggered by Service Bus queue depth; turns a critical event into a tracked incident |
+| `create-incident-job` | Node.js, KEDA `ScaledJob` on AKS | Triggered by Service Bus queue depth; turns a critical event into a tracked incident |
 
-Both services authenticate to Azure (Cosmos DB, Service Bus) via **Azure AD Workload Identity** —
-a Kubernetes ServiceAccount federated to a user-assigned Managed Identity, no connection strings or
+All three authenticate to Azure (Cosmos DB, Service Bus) via **Azure AD Workload Identity** — a
+Kubernetes ServiceAccount federated to a user-assigned Managed Identity, no connection strings or
 client secrets anywhere in application code.
 
 > **A note on `infra/` and the architecture diagram below.** This repository also contains a
@@ -80,18 +82,18 @@ client secrets anywhere in application code.
 | Incident creation job | Node.js, KEDA `ScaledJob` | Triggered by Service Bus queue depth; turns a critical event into a tracked incident |
 | Data store | Azure Cosmos DB (SQL API) | Events, Incidents and Notifications containers; separate databases per environment on one account |
 | Messaging | Azure Service Bus (Topic + subscriptions) | Fans out critical events to the incident-creation job |
-| Orchestration | Azure Kubernetes Service | Runs both services and the incident job |
+| Orchestration | Azure Kubernetes Service | Runs all three services/jobs and the metrics-collector CronJob |
 | GitOps | ArgoCD (app-of-apps) | Every deployment is a Git commit to `inframonitor-gitops`; automated sync + selfHeal, no manual `kubectl apply` |
 | Autoscaling | KEDA | Scale-to-zero for the event-triggered incident job |
-| Observability | kube-prometheus-stack (Prometheus, Grafana, Alertmanager) | Cluster and workload metrics |
-| Identity | Azure AD Workload Identity + Cosmos/Service Bus/ACR RBAC | No connection strings or shared keys in application code; nine purpose-scoped Managed Identities across CI, CD, smoke-test, and runtime roles — see `docs/CICD.md` §3 |
-| CI/CD | GitHub Actions (OIDC, no stored client secret) | Per-service pipelines: lint → test → scan → build → deploy → smoke-test → automatic rollback |
+| Observability | kube-prometheus-stack (Prometheus, Grafana, Alertmanager) + a custom `metrics-collector` CronJob | Cluster/workload metrics, plus real DORA metrics (deployment frequency, change failure rate, MTTR, lead time) and CI/CD pipeline-performance metrics, pushed to Prometheus via Pushgateway |
+| Identity | Azure AD Workload Identity + Cosmos/Service Bus/ACR RBAC | No connection strings or shared keys in application code; **14 distinct, purpose-scoped Managed Identities** across CI, CD, smoke-test, and runtime roles — see `docs/CICD.md §4` |
+| CI/CD | GitHub Actions (OIDC, no stored client secret), two shared reusable `workflow_call` templates | Per-service pipelines: lint → test → scan → build → deploy → smoke-test → automatic rollback, plus a separate human-gated production-promotion pipeline |
 | Container registry | Azure Container Registry | Stores service images, pulled via kubelet identity |
 | IaC (earlier iteration) | Terraform (`azurerm`) | Azure Container Apps + APIM + Front Door — see the note above |
 
 ## Engineering highlights
 
-A few concrete pieces of evidence from this project worth calling out specifically, because they're
+Four concrete pieces of evidence from this project worth calling out specifically, because they're
 the kind of thing that's easy to claim and rarely actually demonstrated:
 
 - **A real, subtle GitHub Actions bug, caught by testing the failure path, not by reading the
@@ -100,23 +102,33 @@ the kind of thing that's easy to claim and rarely actually demonstrated:
   GitHub Actions silently ANDs an implicit `success()` onto any job condition that doesn't already
   contain a status-check function, which made the job stay `skipped` on every failure it was
   supposed to catch. This was only found by deliberately forcing a real staging smoke test to fail
-  and watching the rollback job not run. Full story, with the exact fix, in
-  [docs/CICD.md §5](docs/CICD.md#5-rollback-strategy).
-- **Real coverage numbers, from real runs, not estimated:** `events-service` sits at 96.96% line /
-  79.51% branch coverage across 32 passing Jest tests (verified against actual GitHub Actions run
-  output); `incidents-service` sits at 82.91% line / 82.35% branch across 33 passing xUnit tests.
-  Both gaps are documented and explained, not hidden — see
-  [docs/CICD.md §6](docs/CICD.md#6-testing-philosophy).
-- **A promotion gate that checks evidence, not just intent.** Production promotion doesn't just
-  trust a human's choice of image tag — `verify-staging-smoke-test.sh` queries this repo's own
-  Actions history for a genuinely successful staging smoke test against that *exact* tag before
-  `events-service-production-promotion.yml` will proceed at all, and refuses to promote anything it
-  can't find real evidence for.
-- **Nine identities, split by capability, with the reasoning behind each split documented and
-  independently verified against the live Azure subscription** — not just "least privilege" as a
-  slogan. `docs/CICD.md §3` includes the specific, concrete story of the ACR-push identity reuse
-  question being raised and rejected, and why the smoke-test RBAC grants `pods/portforward` and not
-  `pods/exec`.
+  and watching the rollback job not run — then re-verified the same way, for real, across all three
+  services and both staging and production. Full story, with the exact fix, in
+  [docs/CICD.md §6](docs/CICD.md#6-rollback-strategy).
+- **Real DORA metrics, with honest caveats instead of vanity numbers.** All four DORA keys
+  (deployment frequency, change failure rate, MTTR, lead time for changes) are computed from real
+  GitHub Actions history and Cosmos-backed deployment records, not hand-waved — and the writeup
+  doesn't stop at the numbers. Lead time currently sits around 6–10 minutes per service; the
+  document says plainly that this reflects *this project's own manual-promotion practice*, not raw
+  pipeline speed (the pipeline mechanics themselves run well under two minutes), because reporting
+  a flattering number without that context would misrepresent what's actually being measured. See
+  [docs/CICD.md §9](docs/CICD.md#9-dora-metrics).
+- **The golden-path template extraction was backed by a real job-by-job analysis, not intuition.**
+  Before writing a single reusable workflow template, every job across the (then two) existing
+  pipelines was individually categorized as language-agnostic or language-specific, with the
+  evidence written down first: over 70% of the CI pipeline's jobs, and 100% of the
+  production-promotion pipeline, turned out to never touch source code at all — which is exactly
+  why the templates are split by pipeline *shape*, not by language. See
+  [docs/CICD.md §2](docs/CICD.md#2-pipeline-architecture).
+- **14 distinct identities, split by capability, with the reasoning behind each split documented.**
+  Not "least privilege" as a slogan — a concrete, load-bearing decision trail: the ACR-push
+  identity-reuse question being raised and rejected (a PR-reachable identity must never be able to
+  push an image), why the smoke-test RBAC grants `pods/portforward` and not `pods/exec`, and a
+  documented, not-yet-unified inconsistency between an older account-wide Cosmos RBAC pattern and a
+  newer, narrower container-scoped one. See [docs/CICD.md §4](docs/CICD.md#4-identity-and-security-model).
+
+**→ Full engineering writeup, with every claim above traced to real code, real runs, and real
+data: [docs/CICD.md](docs/CICD.md).**
 
 ## Repository structure
 
@@ -127,21 +139,29 @@ Cloud-Infrastructure-Monitoring-Alerting-Platform/   (this repo)
 │   ├── services/
 │   │   ├── events-service/            # Node.js + Express: event ingestion API
 │   │   ├── incidents-service/         # .NET 10 Web API: incident management API
-│   │   └── incidents-service.Tests/   # xUnit test project (see docs/CICD.md §6)
+│   │   ├── incidents-service.Tests/   # xUnit unit tests
+│   │   └── incidents-service.IntegrationTests/   # xUnit integration tests, real Azure resources
 │   ├── functions/
 │   │   └── incident-function/         # Node.js source for the KEDA-scaled create-incident-job
 │   └── send-notification-go/          # Go notification prototype (reference only, not deployed)
 ├── infra/                             # Terraform - the earlier Container Apps iteration (see note above)
 ├── scripts/
-│   ├── smoke-test.sh                  # Real deployed-pod verification, shared by both services/both environments
+│   ├── smoke-test.sh                  # Real deployed-pod verification, shared by events/incidents-service
+│   ├── create-incident-job-smoke-test.sh   # KEDA/Service Bus-shaped equivalent for the incident job
 │   ├── find-rollback-target.sh        # Walks CI history for the most recent verified-good tag
-│   └── verify-staging-smoke-test.sh   # Production-promotion gate: checks for real evidence, not just a tag name
+│   ├── verify-staging-smoke-test.sh   # Production-promotion gate: checks for real evidence, not just a tag name
+│   └── metrics-collector/             # Node script: GitHub Actions history -> Cosmos DB -> DORA/pipeline metrics
 ├── docs/
-│   └── CICD.md                        # The full CI/CD engineering writeup - start here for pipeline detail
+│   ├── CICD.md                        # The full CI/CD + observability engineering writeup - start here
+│   └── reusable-workflow-analysis.md  # The job-by-job evidence behind the golden-path template split
 └── .github/workflows/
-    ├── events-service-ci.yml          # Lint → test → scan → build → deploy(staging) → smoke-test → rollback
-    ├── events-service-production-promotion.yml
-    ├── incidents-service-ci.yml       # Same shape, .NET - see docs/CICD.md §7 for its current run status
+    ├── service-ci-template.yml        # Shared reusable CI template (all three services)
+    ├── service-cd-template.yml        # Shared reusable staging-deploy template (all three services)
+    ├── service-promotion-template.yml # Shared reusable production-promotion template (all three services)
+    ├── events-service-ci.yml / events-service-production-promotion.yml
+    ├── incidents-service-ci.yml / incidents-service-production-promotion.yml
+    ├── create-incident-job-ci.yml / create-incident-job-production-promotion.yml
+    ├── metrics-collector-ci.yml       # Builds/deploys the metrics-collector CronJob image
     ├── terraform.yml                  # Earlier iteration's IaC pipeline (self-hosted runner)
     └── deploy-frontend.yml            # Frontend build/deploy to Azure Static Web Apps
 
@@ -150,14 +170,15 @@ inframonitor-gitops/   (separate repo - the GitOps source of truth for the AKS p
     ├── apps/                          # ArgoCD Application manifests (app-of-apps)
     ├── events-service/                # Helm chart: values.yaml + per-environment values-{staging,production}.yaml
     ├── incidents-service/
-    ├── create-incident-job/
+    ├── create-incident-job/           # Includes the KEDA ScaledJob + TriggerAuthentication
+    ├── metrics-collector/             # CronJob, Key Vault CSI SecretProviderClass, Grafana dashboard ConfigMap
     └── inframonitor-namespace/        # Namespaces + CI/CD RBAC (ci-rbac.yaml, ci-argocd-refresh-rbac.yaml)
 ```
 
 ## Running things locally
 
-**The two backend services** run locally against real Azure resources (Cosmos DB, Service Bus) via
-environment variables — there's no local emulator step documented or required beyond that:
+**All three backend components** run locally against real Azure resources (Cosmos DB, Service Bus)
+via environment variables — there's no local emulator step documented or required beyond that:
 
 ```bash
 # events-service
@@ -167,16 +188,23 @@ cd Microservices/services/events-service && npm install && npm run dev
 # incidents-service
 cd Microservices/services/incidents-service && dotnet run
 
+# create-incident-job (incident-function)
+cd Microservices/functions/incident-function && npm install && npm run start:create-incident
+# a one-shot job (node src/create-incident.js), not a long-running server - needs a real Service Bus
+# message to process; see scripts/create-incident-job-smoke-test.sh for how CI exercises it end to end
+
 # Frontend
 cd Frontend && npm install && npm run dev
 ```
 
-**Running the test suites** (the numbers in the Engineering highlights section above come from
-exactly these commands):
+**Running the test suites** (the numbers in the Engineering highlights section and
+[docs/CICD.md §3](docs/CICD.md#3-testing-philosophy) come from exactly these commands):
 
 ```bash
 cd Microservices/services/events-service && npm run test:coverage        # Jest
 cd Microservices/services/incidents-service.Tests && dotnet test /p:CollectCoverage=true /p:CoverletOutputFormat=cobertura   # xUnit + coverlet
+cd Microservices/functions/incident-function && npm run test:coverage    # Jest
+cd scripts/metrics-collector && npm test                                 # Jest, the collector's own pure-function unit tests
 ```
 
 **Prerequisites:** [Node.js](https://nodejs.org/) 20, the
@@ -190,8 +218,9 @@ provisioning the `inframonitor-aks` cluster itself, and the cluster-level add-on
 (ArgoCD, KEDA's own operator, kube-prometheus-stack) are not captured as code in either this repo
 or `inframonitor-gitops` — they were provisioned directly against the cluster. Everything
 *downstream* of "the cluster and these add-ons exist" (every service, every namespace, every RBAC
-binding) is GitOps-managed from `inframonitor-gitops`; the cluster and its add-ons themselves
-currently are not. See `docs/CICD.md`'s scope note for how this fits together.
+binding, the metrics-collector CronJob) is GitOps-managed from `inframonitor-gitops`; the cluster
+and its add-ons themselves currently are not. See `docs/CICD.md`'s scope note for how this fits
+together.
 
 For the earlier Container Apps / Terraform iteration's own getting-started steps (provisioning via
 `terraform apply`, the self-hosted runner, environment variables/secrets reference, and the full
